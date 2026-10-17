@@ -107,15 +107,16 @@ def people_states(frames, roles, seat, states, fps, confirm, gap):
                         and distance > .25*(anchor[3]-anchor[1])):
                     active = False
             raw[cid][i] |= active
-        # Fill an interior tracker gap only with a visible person/reflection at the same service
-        # position. This does not extend a disappeared client beyond their last observed track.
+        # Клиент на своём месте — присутствует, даже если трек оборвался: сидящего клиента L1 подолгу метит как
+        # reflection (X-39, 51–72 с), а ByteTrack продолжает трек отражением не дольше секунды. Считаем по месту:
+        # бокс человека или отражения без роли, лежащий на якоре клиентского трека (IoU ≥ .5), — этот клиент.
         for b in boxes:
             if b.get("track_id") in roles or b["cls"] not in ("person", "reflection") or b.get("conf", 0) < .5:
                 continue
-            candidates = [(iou(b["bbox"], anchors[tid]), tid) for tid in tracks if roles[tid] == "client"
-                          and tracks[tid][0][0] <= t <= tracks[tid][-1][0]]
-            if candidates and max(candidates)[0] >= .35:
-                raw[canonical[max(candidates)[1]]][i] = True
+            candidates = [(iou(b["bbox"], anchors[tid]), -abs(t - tracks[tid][-1][0]), tid)
+                          for tid in tracks if roles[tid] == "client"]
+            if candidates and max(candidates)[0] >= .5:
+                raw[canonical[max(candidates)[2]]][i] = True
     ts = [t for t, _ in frames]
     stable = {tid: stable_presence(vals, ts, fps, confirm, gap) for tid, vals in raw.items()}
     service = 0
@@ -168,13 +169,20 @@ def object_actions(frames, states, zones, fps, confirm, gap, learned=()):
                      "held" if held else "desk" if table and center_in(bbox, table) else "unknown")
             rec["samples"].append({"t": t, "bbox": bbox, "cls": b["cls"], "place": place,
                                    "service": state["_service"] or state["_last_service"], "conf": b["conf"]})
+    def service_at(t):
+        st = min(states, key=lambda st: abs(st["t"]-t)) if states else {}
+        return st.get("_service") or st.get("_last_service")
+
     actions = []
     for rec in records:
         samples = rec["samples"]
         cash_times = [s["t"] for s in samples if s["cls"] == "banknotes"]
+        # Передача денег клиентом в том же обслуживании делает мелкий предмет на столе деньгами клиента — и через
+        # 15 с после передачи (X-38: пачку вернули на стол после машинки, детектор видит в ней карточку)
         receipts = [a for a in learned if a["action"] == "give" and a.get("object") == "banknotes"
                     and a.get("actor") == "client" and a.get("p_learned", 0) >= .9
-                    and -.5 <= samples[0]["t"]-a["t"] <= 5]
+                    and -.5 <= samples[0]["t"]-a["t"] and (samples[0]["t"]-a["t"] <= 5
+                                                           or service_at(a["t"]) == samples[0]["service"])]
         card_receipts = [a for a in learned if a.get("object") == "id_card" and abs(a["t"]-samples[0]["t"]) <= 3]
         context = bool(receipts and not card_receipts)
         if len(cash_times) < 2 and not context:
@@ -308,7 +316,8 @@ def journal(frames, roles, seat, raw_states, legacy_segments, learned, zones, fp
             segs[-1]["t_end"] = round(st["t"]+1/fps, 3)
         else:
             segs.append({"t_start": st["t"], "t_end": round(st["t"]+1/fps, 3), "state": value})
-    actions = [a for a in scene_actions(segs) if a.get("object") != "banknotes"]
+    # put/take денег даёт память предметов ниже; split_bundle (деление пачки, X-1) оставляем сценным автоматам
+    actions = [a for a in scene_actions(segs) if a.get("object") != "banknotes" or a["action"] == "split_bundle"]
     actions += object_actions(frames, states, zones, fps, confirm, gap, learned)
     actions += machine_interactions(frames, zones, actions, learned, fps, confirm, gap)
     actions += personal_item_actions(frames, zones, fps, confirm, gap)
@@ -334,12 +343,13 @@ def corroborate(event, action, actions):
         supports = []
         for a in actions:
             proof = a.get("evidence", {})
-            if a["t"] > t or a["action"] != "put" or a.get("target") != "desk":
+            # только деньги из памяти предметов: у личных вещей (foreign_object) выборки без места
+            if a["t"] > t or a["action"] != "put" or a.get("target") != "desk" or a.get("object") != "banknotes":
                 continue
             if title.startswith("Деньги предыдущего") and not (0 < proof.get("owner_service", 0) < action.get("service_id", 0)):
                 continue
             samples = [s for s in proof.get("samples", []) if s["t"] <= t]
-            if samples and samples[-1]["place"] == "desk" and samples[-1].get("cash") and t-samples[-1]["t"] <= parameters()[1]:
+            if samples and samples[-1].get("place") == "desk" and samples[-1].get("cash") and t-samples[-1]["t"] <= parameters()[1]:
                 supports.append(a)
         if not supports:
             reasons.append("Нет свежего подтверждения наличных на столе нужного обслуживания")

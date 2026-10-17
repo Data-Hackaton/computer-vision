@@ -257,9 +257,10 @@ def analyze(boxes: list[dict], fps: float, *, calibrate: bool = True, collect_ev
     if selected_policy == "temporal_v2":
         states, segs, actions = temporal.journal(frames, roles, seat, states, segs, learned, zones, fps)
     # уход кассира — с момента, когда он последний раз был у своего места (встал и пошёл), а не когда пропал из
-    # кадра; но не раньше его последнего действия со столом (положил деньги и ушёл — деньги остались на столе)
+    # кадра; но не раньше его последнего действия со столом (положил деньги и ушёл — деньги остались на столе).
+    # Для обеих политик: без сдвига X-28 ловится на 15,8 с вместо 7,3 — мимо окна ±3 с от метки
     for a in actions:
-        if selected_policy == "legacy" and a["action"] == "person_leave" and a["actor"] == "cashier":
+        if a["action"] == "person_leave" and a["actor"] == "cashier":
             at_seat = [st["t"] for st in states if st["t"] <= a["t"] and st["_cashier_d"] is not None
                        and st["_cashier_d"] < LEAVE_SEAT_D]
             last_desk = [b["t"] for b in actions if b.get("target") == "desk" and b["t"] < a["t"]]
