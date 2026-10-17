@@ -91,6 +91,16 @@ def test_sop_checker_missing_count_on_machine():
     assert "Обслуживание клиента 2 (12.0–20.0 с)" in e["message"] and "пересчитываются" in e["message"]
 
 
+def test_evidence_times():
+    # первый кадр — на таймкоде, соседние — в пределах видео
+    from cv.pipeline import evidence_times
+
+    assert evidence_times(7.26, 16.5) == [7.26, 5.76, 8.76]
+    assert evidence_times(0.5, 16.5) == [0.5, 2.0]
+    assert evidence_times(16.0, 16.5) == [16.0, 14.5]
+    assert evidence_times(3.0, None) == [3.0, 1.5]
+
+
 def test_rule_explanations():
     # пояснения правил для описаний событий (worker.describe): из scenarios.yaml с основаниями из норм
     from cv.pipeline import why_by_title

@@ -21,7 +21,7 @@ from temporalio.client import Client
 from temporalio.worker import Worker
 
 from cv.detectors import get_detector
-from cv.pipeline import build_video_events, describe, frame_with_boxes, load_spec, why_by_title
+from cv.pipeline import build_video_events, describe, evidence_times, frame_with_boxes, load_spec, why_by_title
 
 S3_BUCKET = os.environ.get("S3_BUCKET", "datathon")
 CV_QUEUE = "cv-gpu"
@@ -75,12 +75,13 @@ def run_cv(task: dict) -> dict:
                 continue
             if e["event"] != "sop_step":  # у SOP-чекера сообщение готово: «Пропущен шаг процедуры в цикле …»
                 e["message"] = describe(e, why)
-            if e["status"] == "violation":
-                key = f"jobs/{job_id}/evidence/{n}.jpg"
-                _s3.put_object(Bucket=S3_BUCKET, Key=key, Body=frame_with_boxes(video, e["t_start"], det.boxes),
-                               ContentType="image/jpeg")
-                e["evidence"].append({"t": e["t_start"], "key": key})
-                n += 1
+            if e["status"] == "violation":  # кадр на таймкоде и соседние — до 3 на нарушение
+                for t in evidence_times(e["t_start"], task.get("duration")):
+                    key = f"jobs/{job_id}/evidence/{n}.jpg"
+                    _s3.put_object(Bucket=S3_BUCKET, Key=key, Body=frame_with_boxes(video, t, det.boxes),
+                                   ContentType="image/jpeg")
+                    e["evidence"].append({"t": t, "key": key})
+                    n += 1
 
     put_json(f"jobs/{job_id}/events.json", events)
     put_json(f"jobs/{job_id}/boxes.json", det.boxes)

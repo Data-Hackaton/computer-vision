@@ -146,6 +146,17 @@ def describe(e: dict, why: dict[str, str]) -> str:
     return f"{seen} {reason}." if reason else seen
 
 
+EVIDENCE_CONTEXT_SEC = 1.5  # соседние кадры-доказательства: до и после события
+
+
+def evidence_times(t: float, duration: float | None) -> list[float]:
+    """Секунды кадров-доказательства: первый — на таймкоде, затем за EVIDENCE_CONTEXT_SEC до и после (в пределах
+    видео) — проверяющему виден ход действия, жюри получает 1–3 кадра."""
+    end = duration if duration else t
+    return [round(t, 3)] + [round(x, 3) for x in (t - EVIDENCE_CONTEXT_SEC, t + EVIDENCE_CONTEXT_SEC)
+                            if 0 <= x <= end - 0.05]
+
+
 def frame_with_boxes(video: Path, t: float, boxes: list[dict]) -> bytes:
     """Кадр в момент t с боксами модели в пределах ±0,5 с — кадр-доказательство."""
     raw = subprocess.run(["ffmpeg", "-v", "error", "-ss", f"{max(t, 0):.3f}", "-i", str(video), "-frames:v", "1",
