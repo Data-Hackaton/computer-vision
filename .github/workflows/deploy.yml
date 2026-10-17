@@ -1,0 +1,26 @@
+# Автодеплой на k3s-lab: push в main → runner k3s-lab этого репозитория (на сервере) → ~/datathon/infra/deploy.sh.
+# Ставит на сервер ровно этот коммит, выполняет шаги репозитория и проверку, при сбое откатывает (infra/deploy.sh).
+# Пауза — touch ~/datathon/.deploy-freeze на сервере; вручную — Run workflow.
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, k3s-lab]
+    timeout-minutes: 90
+    steps:
+      - name: infra/deploy.sh
+        run: ~/datathon/infra/deploy.sh "${{ github.event.repository.name }}" "${{ github.sha }}"
+        env:
+          GH_TOKEN: ${{ github.token }}
