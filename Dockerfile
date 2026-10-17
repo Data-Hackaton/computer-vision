@@ -32,8 +32,10 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 RUN uv pip install --no-cache mediapipe==1.0.1
 ADD https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task /models/
+ADD https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task /models/
 ADD https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/1/pose_landmarker_heavy.task /models/
 RUN echo "59929e1d1ee95287735ddd833b19cf4ac46d29bc7afddbbf6753c459690d574a  /models/pose_landmarker_lite.task" | sha256sum -c - \
+ && echo "5134a3aad27a58b93da0088d431f366da362b44e3ccfbe3462b3827a839011b1  /models/pose_landmarker_full.task" | sha256sum -c - \
  && echo "64437af838a65d18e5ba7a0d39b465540069bc8aae8308de3e318aad31fcbc7b  /models/pose_landmarker_heavy.task" | sha256sum -c - \
  && chmod 644 /models/*.task
 ENV POSE_MODEL_DIR=/models

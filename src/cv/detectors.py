@@ -340,7 +340,8 @@ def apply_model_dir() -> str | None:
             env[var] = str(params[name])
     env["DETECTOR_VIEWS"] = json.dumps(params["views"]) if params.get("views") else ""  # ансамбль видов кадра, cv.views
     env["TRACKER"] = params.get("tracker") or "greedy"  # трекер людей L2, decision.tracking
-    env["SAMPLE_FPS"] = str(params.get("sample_fps") or 4)  # native — каждый кадр
+    rate = params.get("sample_fps", 4)
+    env["SAMPLE_FPS"] = "native" if rate in (0, "0", "native") else str(rate)
     env["POSE"] = params.get("pose") or "off"  # позы людей MediaPipe (cv.pose): lite / full / heavy
     env["POSE_EVERY"] = str(params.get("pose_every") or 1)
     os.environ.update(env)

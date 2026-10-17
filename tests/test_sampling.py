@@ -89,6 +89,10 @@ def test_model_dir_sets_sample_fps():
             os.environ["MODEL_DIR"] = root
             apply_model_dir()
             assert os.environ["SAMPLE_FPS"] == "native"
+            manifest["params"]["sample_fps"] = 0
+            (Path(root) / "model.json").write_text(json.dumps(manifest))
+            apply_model_dir()
+            assert os.environ["SAMPLE_FPS"] == "native"
             del manifest["params"]["sample_fps"]  # релиз без параметра — прежние 4 кадр/с
             (Path(root) / "model.json").write_text(json.dumps(manifest))
             apply_model_dir()
