@@ -10,24 +10,26 @@
 #   --views '<json>'  ансамбль видов кадра (cv.views), в params.views:
 #                     '[{"name":"orig","weight":0.76},{"name":"unsharp","weight":0.12},{"name":"clahe","weight":0.12}]'
 #   --tracker <имя>   трекер людей L2 (decision.tracking), в params.tracker: greedy (по умолчанию), bytetrack, botsort
-#   --tag <тег>       свой тег вместо model-<детектор>-<прогон>-<дата>
+#   --sample-fps <n>  кадров в секунду на анализ, в params.sample_fps: native — каждый кадр видео (по умолчанию 4)
+#   --tag <тег>      свой тег вместо model-<детектор>-<прогон>-<дата>
 #   --draft           черновик релиза: на сервер не выкатывается, пока его не опубликуют
 #   --out <каталог>   только собрать релиз (model.json и файлы), ничего не публиковать
 # Обучение — README.md, раздел «Обучение». Нужны gh (вход в GitHub) и python3 на хосте.
 set -euo pipefail
 repo=$(cd "$(dirname "$0")/.." && pwd)
 
-usage() { sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
+usage() { sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
 [ $# -ge 2 ] || usage
 detector=$1 run_dir=${2%/}
 shift 2
-steps='' conf=0.35 views='' tracker='' weights='' tag='' draft='' out='' build_only=''
+steps='' conf=0.35 views='' tracker='' sample_fps='' weights='' tag='' draft='' out='' build_only=''
 while [ $# -gt 0 ]; do
   case $1 in
     --steps) steps=$2; shift 2 ;;
     --conf) conf=$2; shift 2 ;;
     --views) views=$2; shift 2 ;;
     --tracker) tracker=$2; shift 2 ;;
+    --sample-fps) sample_fps=$2; shift 2 ;;
     --weights) weights=$2; shift 2 ;;
     --tag) tag=$2; shift 2 ;;
     --draft) draft=--draft; shift ;;
@@ -44,6 +46,7 @@ esac
 [ -f "$weights" ] || { echo "нет весов $weights"; exit 1; }
 [ -z "$steps" ] || [ -f "$steps" ] || { echo "нет классификатора шагов $steps"; exit 1; }
 case ${tracker:-greedy} in greedy|bytetrack|botsort) ;; *) echo "трекер: greedy, bytetrack или botsort"; exit 1 ;; esac
+[[ -z $sample_fps || $sample_fps == native || $sample_fps =~ ^[0-9]+(\.[0-9]+)?$ ]] || { echo "--sample-fps: native или число"; exit 1; }
 run=$(basename "$run_dir")
 tag=${tag:-model-$detector-$run-$(date +%Y%m%d)}
 [[ $tag =~ ^model-[A-Za-z0-9._-]+$ ]] || { echo "тег должен быть вида model-…: $tag"; exit 1; }
@@ -57,12 +60,12 @@ cp "$weights" "$out/"
 [ -z "$steps" ] || cp "$steps" "$out/steps.joblib"
 
 # Манифест: что читает cv.detectors.apply_model_dir, плюс происхождение — коммиты кода и данных, метрики обучения
-python3 - "$out" "$tag" "$detector" "$(basename "$weights")" "${steps:+steps.joblib}" "$conf" "$views" "$tracker" "$run_dir" \
+python3 - "$out" "$tag" "$detector" "$(basename "$weights")" "${steps:+steps.joblib}" "$conf" "$views" "$tracker" "$sample_fps" "$run_dir" \
   "$(git -C "$repo" rev-parse HEAD)" "$(git -C "$repo/../data_prepare" rev-parse HEAD 2>/dev/null || true)" <<'EOF'
 import csv, hashlib, json, sys, time
 from pathlib import Path
 
-out, tag, detector, weights, steps, conf, views, tracker, run_dir, code, data = sys.argv[1:]
+out, tag, detector, weights, steps, conf, views, tracker, sample_fps, run_dir, code, data = sys.argv[1:]
 out, run_dir = Path(out), Path(run_dir)
 
 
@@ -97,6 +100,8 @@ if views:  # проверка, как в cv.views.parse_views: известны�
     assert sum(v["weight"] for v in params["views"]) > 0, views
 if tracker:
     params["tracker"] = tracker
+if sample_fps:
+    params["sample_fps"] = sample_fps if sample_fps == "native" else float(sample_fps)
 manifest = {"tag": tag, "detector": detector, "run": run_dir.name,
             "weights": {"file": weights, "sha256": sha256(weights)},
             "steps": {"file": steps, "sha256": sha256(steps)} if steps else None,
@@ -107,7 +112,7 @@ print(json.dumps(manifest, ensure_ascii=False, indent=1))
 EOF
 
 [ -z "$build_only" ] || { echo "собрано в $out, не публикую"; exit 0; }
-notes="Модель $detector, прогон $run, порог $conf${views:+, виды кадра $views}${tracker:+, трекер $tracker}$([ -n "$steps" ] && echo ", с классификатором шагов" || echo ", L2 только правила").
+notes="Модель $detector, прогон $run, порог $conf${views:+, виды кадра $views}${tracker:+, трекер $tracker}${sample_fps:+, кадров в секунду $sample_fps}$([ -n "$steps" ] && echo ", с классификатором шагов" || echo ", L2 только правила").
 Выкатка на k3s-lab — workflow model-deploy (оценка, сравнение с текущей, откат при сбое)."
 gh release create "$tag" -R Data-Hackaton/computer-vision --target main --title "$tag" --notes "$notes" $draft \
   "$out"/*

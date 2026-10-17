@@ -53,7 +53,7 @@ def main() -> None:
         out = cache_path(r["sha256"], detector, cache_tag)
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps({"video": r["video"], "detector": detector, "model": tag, "weights": str(det.weights),
-                                   "fps": det.fps, "conf": det.conf, "low_conf": det.low_conf, "views": det.views,
+                                   "fps": det.last_fps, "conf": det.conf, "low_conf": det.low_conf, "views": det.views,
                                    "boxes": boxes}))
         took = time.time() - started
         print(f"{r['video']:>5}: {float(r['duration_sec']):6.1f} с видео → {len(boxes):5d} боксов за {took:5.1f} с",
