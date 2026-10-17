@@ -22,6 +22,7 @@ from cv.infer import cache_path, detector_arg
 from cv.pipeline import build_video_events, load_spec
 from decision.sop import seq_accuracy
 from decision.steps import analyze, with_vlm
+from decision.quality import typed_result, typed_summary
 
 CATCH_WINDOW_SEC = 3  # как в data_prepare.reference_actions
 # Кадры этих видео — в train детектора (r1 train, r1b), журнал X-1 — образец для правил
@@ -111,6 +112,7 @@ def main() -> None:
                 "violations": [{"t": e["t_start"], "title": e["title"]} for e in viol],
                 "warnings": [{"t": e["t_start"], "title": e.get("title") or e["event"]} for e in warn]}
         report.append(item)
+        item["typed"] = typed_result(item["expected_type"], item["label_t"], item["violations"])
         mark = "OK " if verdict == r["verdict"] else "ERR"
         found = "; ".join(f"{v['t']:.1f} {v['title']}" for v in item["violations"][:3])
         print(f"{mark} {name:>5} [{item['group']:>6}] {r['verdict']:>12} → {verdict:<12} "
@@ -158,7 +160,10 @@ def main() -> None:
     if args.summary:
         missing = len(rows) - len(report)  # видео без кэша L1: ворота не должны сравнивать неполные прогоны
         args.summary.parent.mkdir(parents=True, exist_ok=True)
-        args.summary.write_text(json.dumps({"detector": detector, "model": tag, "missing": missing, "groups": groups},
+        args.summary.write_text(json.dumps({"detector": detector, "model": tag, "missing": missing, "groups": groups,
+                                           "decision_policy": os.environ.get("DECISION_POLICY", "legacy"),
+                                           "typed_groups": {g: typed_summary([r for r in report if g == "all" or r["group"] == g])
+                                                            for g in ("dev", "honest", "all")}},
                                            ensure_ascii=False, indent=1))
         print(f"→ {args.summary}")
 

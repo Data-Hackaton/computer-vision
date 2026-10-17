@@ -229,6 +229,9 @@ def analyze(boxes: list[dict], fps: float, *, calibrate: bool = True, collect_ev
 
     Слабые боксы людей (attributes.low, DETECTOR_LOW_CONF) только продлевают треки: продлившие остаются в boxes,
     остальные удаляются из списка на месте — ни в L2, ни в боксы задачи они не попадают."""
+    from decision import temporal
+
+    selected_policy = temporal.policy()
     low = [b for b in boxes if b.get("attributes", {}).get("low")]
     if low:
         boxes[:] = [b for b in boxes if not b.get("attributes", {}).get("low")]
@@ -242,13 +245,20 @@ def analyze(boxes: list[dict], fps: float, *, calibrate: bool = True, collect_ev
     segs = segments(states, fps)
     get_classifier()  # проверка STEP_CLASSIFIER
     actions = scene_actions(segs)  # автоматы сцены (decision.fsm); RulesClassifier — эталон для сверки
+    learned = []
     if (model_path := step_model()) is not None:
         from decision.learned import learned_actions
 
-        actions += learned_actions(boxes, fps, model_path)
+        learned = learned_actions(boxes, fps, model_path)
+        actions += learned
     actions += pose_actions(states, actions, fps)
+    zones = {c: median_box([b["bbox"] for _, bs in frames for b in bs if b["cls"] == c])
+             for c in ("table", "safe", "cash_machine")}
+    if selected_policy == "temporal_v2":
+        states, segs, actions = temporal.journal(frames, roles, seat, states, segs, learned, zones, fps)
     # уход кассира — с момента, когда он последний раз был у своего места (встал и пошёл), а не когда пропал из
-    # кадра; но не раньше его последнего действия со столом (положил деньги и ушёл — деньги остались на столе)
+    # кадра; но не раньше его последнего действия со столом (положил деньги и ушёл — деньги остались на столе).
+    # Для обеих политик: без сдвига X-28 ловится на 15,8 с вместо 7,3 — мимо окна ±3 с от метки
     for a in actions:
         if a["action"] == "person_leave" and a["actor"] == "cashier":
             at_seat = [st["t"] for st in states if st["t"] <= a["t"] and st["_cashier_d"] is not None
@@ -257,8 +267,6 @@ def analyze(boxes: list[dict], fps: float, *, calibrate: bool = True, collect_ev
             if at_seat:
                 a["t_seen"] = a["t"]  # когда пропал из кадра — для сверки с журналом (decision.evidence)
                 a["t"] = round(max([at_seat[-1]] + [t + 0.1 for t in last_desk]), 2)
-    zones = {c: median_box([b["bbox"] for _, bs in frames for b in bs if b["cls"] == c])
-             for c in ("table", "safe", "cash_machine")}
     # ECL (decision.evidence): достоверность каждого действия до правил L3; выключен — действия как есть
     from decision import evidence  # decision.evidence → decision.learned импортирует этот модуль
 

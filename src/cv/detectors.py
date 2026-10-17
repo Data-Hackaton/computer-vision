@@ -356,6 +356,15 @@ def apply_model_dir() -> str | None:
     env["SAMPLE_FPS"] = "native" if rate in (0, "0", "native") else str(rate)
     env["POSE"] = params.get("pose") or "off"  # позы людей MediaPipe (cv.pose): lite / full / heavy
     env["POSE_EVERY"] = str(params.get("pose_every") or 1)
+    from decision.temporal import POLICIES
+
+    selected_policy = params.get("decision_policy", "legacy")
+    if selected_policy not in POLICIES:
+        raise ValueError(f"Unknown decision policy: {selected_policy!r}")
+    confirm, gap = params.get("decision_confirm_sec", 1), params.get("decision_occlusion_sec", 2)
+    if float(confirm) not in (.5, 1, 1.5) or float(gap) not in (1, 2, 3):
+        raise ValueError("Invalid temporal decision parameters")
+    env.update(DECISION_POLICY=selected_policy, DECISION_CONFIRM_SEC=str(confirm), DECISION_OCCLUSION_SEC=str(gap))
     env.update(ECL="off", ECL_MODEL="")
     if part := manifest.get("ecl"):
         try:
