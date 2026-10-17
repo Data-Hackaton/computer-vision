@@ -71,6 +71,10 @@ def build_video_events(det: Detection, spec: dict, video_name: str = "video") ->
         from decision.temporal import corroborate
 
         corroborate(e, action, [a for acts in instance_actions for a in acts])
+        # ценности остались без присмотра, когда кассир вышел из помещения, а не когда встал из-за стола
+        if (e.get("title") == "Ценности на столе при уходе кассира" and action and action.get("t_gone")
+                and action.get("evidence", {}).get("policy") == "temporal_v2"):
+            e["t_start"] = e["t_end"] = float(action["t_gone"])
     from decision.temporal import deduplicate
 
     return deduplicate(events) + sequence_events(instance_actions, spec)

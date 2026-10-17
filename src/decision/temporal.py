@@ -262,6 +262,41 @@ def personal_item_actions(frames, zones, fps, confirm, gap):
     return out
 
 
+def bag_actions(frames, zones, fps, confirm, gap):
+    """Сумка на столешнице с памятью: put — первое устойчивое наблюдение на столе, take — только когда сумку видно
+    в руках или вне столешницы. Пропажа детекции — не «убрали» (X-15: сумка лежит до конца, детектор её теряет)."""
+    table = zones.get("table")
+    if not table:
+        return []
+    w, h = table[2]-table[0], table[3]-table[1]
+    desk = [table[0]-.05*w, table[1]-.05*h, table[2]+.05*w, table[1]+.55*h]
+    ts, on_desk, away = [], [], []
+    for t, boxes in frames:
+        hands = [b["bbox"] for b in boxes if b["cls"] == "hand"]
+        bags = [b["bbox"] for b in boxes if b["cls"] == "bag" and (b.get("conf") or 0) >= .45]
+        resting = [b for b in bags if center_in(b, desk) and not any(overlap_share(b, hd) > .2 for hd in hands)]
+        ts.append(t)
+        on_desk.append(bool(resting))
+        away.append(bool(bags) and not resting)
+    stable = stable_presence(on_desk, ts, fps, confirm, gap)
+    out, placed, last_run_end = [], False, None
+    for i, present in enumerate(stable):
+        if present and not placed and (i == 0 or not stable[i-1]):
+            if last_run_end is not None and not any(away[last_run_end:i]):
+                placed = True  # та же сумка лежала всё это время, детектор её просто не видел
+                continue
+            out.append({"t": ts[i], "action": "put", "actor": "cashier", "object": "bag", "target": "desk",
+                        "evidence": {"policy": "temporal_v2", "level": "observed"}})
+            placed = True
+        if placed and not present and (i == 0 or stable[i-1]):
+            last_run_end = i
+        if placed and not present and away[i]:
+            out.append({"t": ts[i], "action": "take", "actor": "cashier", "object": "bag", "target": "desk",
+                        "evidence": {"policy": "temporal_v2", "level": "observed"}})
+            placed, last_run_end = False, None
+    return out
+
+
 def machine_interactions(frames, zones, actions, learned, fps, confirm, gap):
     """Cash receipt + observed small object + sustained cashier hand at machine = corroborated loading.
 
@@ -321,9 +356,10 @@ def journal(frames, roles, seat, raw_states, legacy_segments, learned, zones, fp
             segs[-1]["t_end"] = round(st["t"]+1/fps, 3)
         else:
             segs.append({"t_start": st["t"], "t_end": round(st["t"]+1/fps, 3), "state": value})
-    # put/take денег даёт память предметов ниже; split_bundle (деление пачки, X-1) оставляем сценным автоматам
-    actions = [a for a in scene_actions(segs) if a.get("object") != "banknotes" or a["action"] == "split_bundle"]
+    # put/take денег и сумки даёт память предметов ниже; split_bundle (деление пачки, X-1) оставляем сценным автоматам
+    actions = [a for a in scene_actions(segs) if a.get("object") not in ("banknotes", "bag") or a["action"] == "split_bundle"]
     actions += object_actions(frames, states, zones, fps, confirm, gap, learned)
+    actions += bag_actions(frames, zones, fps, confirm, gap)
     actions += machine_interactions(frames, zones, actions, learned, fps, confirm, gap)
     actions += personal_item_actions(frames, zones, fps, confirm, gap)
     actions += learned
@@ -348,7 +384,13 @@ def corroborate(event, action, actions):
         supports = []
         for a in actions:
             proof = a.get("evidence", {})
-            # только деньги из памяти предметов: у личных вещей (foreign_object) выборки без места
+            # сумка из памяти (bag_actions): лежит, пока её не увидели в руках или вне стола — подтверждение сама по себе
+            if (title.startswith("Ценности") and a["action"] == "put" and a.get("object") == "bag" and a["t"] <= t
+                    and proof.get("policy") == "temporal_v2"
+                    and not any(x["action"] == "take" and x.get("object") == "bag" and a["t"] < x["t"] <= t for x in actions)):
+                supports.append(a)
+                continue
+            # деньги — только из памяти предметов: у личных вещей (foreign_object) выборки без места
             if a["t"] > t or a["action"] != "put" or a.get("target") != "desk" or a.get("object") != "banknotes":
                 continue
             if title.startswith("Деньги предыдущего") and not (0 < proof.get("owner_service", 0) < action.get("service_id", 0)):
