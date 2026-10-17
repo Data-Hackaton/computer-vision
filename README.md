@@ -161,6 +161,26 @@ docker compose --profile tools run --rm cv python -m cv.eval_detector --dataset 
 - RF-DETR small при 640 px и batch 2 не помещается, работает 512 px и batch 1;
 - Grounding DINO — только fp32 (в fp16 выдаёт NaN), вход 640 px.
 
+## Выкатка модели
+
+Модель на сервере — релиз GitHub `model-*` этого репозитория: веса, классификатор шагов, обученный на L1 этих весов, и `model.json` (детектор, порог, sha256, коммиты кода и данных, метрики обучения).
+
+```sh
+scripts/publish-model.sh yolo ../data_prepare/data/runs/yolo/det_l1-yolo26s \
+    --steps ../data_prepare/data/runs/sop/steps_yolo.joblib     # --draft — без выкатки, --out <каталог> — только собрать
+```
+
+Публикация запускает workflow `model-deploy` на runner k3s-lab, он вызывает `infra/model.sh deploy <тег>`:
+1. Скачивает релиз и сверяет sha256.
+2. Прогоняет L1 на CPU по 40 видео и оценивает (`decision.eval --summary`) вместе с текущей моделью.
+3. Не выкатывает, если верных вердиктов или попаданий ±3 с меньше, чем у текущей, больше чем на одно.
+4. Ждёт пустой очереди, переключает cv-worker и проверяет, что все реплики поднялись с тегом в identity (`GET /api/v1/queue`) и контрольное видео анализируется.
+5. При сбое возвращает прежнюю модель.
+
+Вручную (Actions → model-deploy → Run workflow) — выкатить любой тег, `force` — без сравнения, `rollback` — вернуть предыдущую. Автовыкатку останавливает переменная организации `DEPLOY_FREEZE=1`.
+
+С релизом cv-worker читает всё из `MODEL_DIR` (`cv.detectors.apply_model_dir`): `DETECTOR`, веса, `DETECTOR_CONF`, `STEP_MODEL`; без классификатора шагов в релизе — только правила. Кэш L1 релиза — `features/<sha>/l1_<детектор>@<тег>.json`, обычный кэш для обучения он не трогает. Тег модели — в `jobs.model` и `GET /api/v1/pipeline` (`model_version`).
+
 ## Стекло и отражения
 
 В кадре стеклянная перегородка с дверью: в ней отражаются кассир и клиенты, сквозь неё видны люди в соседнем помещении. Детектор учит класс `ignore_zone` (стекло) и `reflection` (человек в стекле).

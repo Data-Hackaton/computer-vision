@@ -7,6 +7,8 @@
   rfdetr  — RF-DETR (Apache-2.0).
 DETECTOR_WEIGHTS — веса (по умолчанию лучший прогон в data/runs), SAMPLE_FPS — кадров в секунду на анализ,
 DETECTOR_CONF — порог уверенности, DETECTOR_DEVICE — cpu или номер GPU (по умолчанию GPU, если есть). Интерфейс Detection общий: worker и бэкенд не зависят от выбора.
+MODEL_DIR — каталог релиза модели (model.json, веса, классификатор шагов — scripts/publish-model.sh): задаёт всё это
+поверх окружения, см. apply_model_dir.
 """
 
 import csv
@@ -251,6 +253,28 @@ class RfDetrDetector(FrameDetector):
         dets = dets if isinstance(dets, list) else [dets]
         return [[(CLASS_NAMES[int(c)], b.tolist(), float(s)) for b, c, s in zip(d.xyxy, d.class_id, d.confidence)
                  if 0 <= int(c) < len(CLASS_NAMES)] for d in dets]
+
+
+def apply_model_dir() -> str | None:
+    """MODEL_DIR → DETECTOR, DETECTOR_WEIGHTS, STEP_CLASSIFIER/STEP_MODEL, DETECTOR_CONF, RFDETR_*, MODEL_TAG из model.json.
+
+    Классификатор шагов обучен на L1 этих весов, поэтому релиз без него — только правила, а не чужой steps_<детектор>.
+    Каталог — по realpath: процесс закреплён на теге, даже если симлинк current переключат на ходу.
+    Возвращает тег; без MODEL_DIR — None и окружение не трогается."""
+    if not os.environ.get("MODEL_DIR"):
+        return None
+    root = Path(os.environ["MODEL_DIR"]).resolve()
+    manifest = json.loads((root / "model.json").read_text())
+    env = {"DETECTOR": manifest["detector"], "DETECTOR_WEIGHTS": str(root / manifest["weights"]["file"]),
+           "MODEL_TAG": manifest["tag"], "STEP_CLASSIFIER": "hybrid" if manifest.get("steps") else "rules"}
+    if manifest.get("steps"):
+        env["STEP_MODEL"] = str(root / manifest["steps"]["file"])
+    params = manifest.get("params") or {}
+    for name, var in (("conf", "DETECTOR_CONF"), ("rfdetr_size", "RFDETR_SIZE"), ("rfdetr_resolution", "RFDETR_RESOLUTION")):
+        if params.get(name) is not None:
+            env[var] = str(params[name])
+    os.environ.update(env)
+    return manifest["tag"]
 
 
 def get_detector(kind: str | None = None) -> Detector:

@@ -1,0 +1,51 @@
+# Выкатка модели на k3s-lab: публикация релиза model-* (scripts/publish-model.sh) → infra/model.sh deploy на сервере:
+# оценка на 40 видео против текущей, переключение cv-worker при пустой очереди, проверка, откат при сбое.
+# Вручную (Run workflow): выкатить любой опубликованный тег, force — без ворот качества; rollback — вернуть previous.
+# Автовыкатку выключает переменная организации DEPLOY_FREEZE=1 (на время проверки жюри), ручной запуск — нет.
+name: model-deploy
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      action:
+        description: deploy — выкатить тег, rollback — вернуть предыдущую модель
+        type: choice
+        options: [deploy, rollback]
+        default: deploy
+      tag:
+        description: Тег релиза (model-…), для deploy
+        required: false
+      force:
+        description: Без ворот качества (сравнения с текущей моделью)
+        type: boolean
+        default: false
+
+concurrency:
+  group: deploy-k3s-lab
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (startsWith(github.event.release.tag_name, 'model-') && vars.DEPLOY_FREEZE != '1')
+    runs-on: [self-hosted, k3s-lab]
+    timeout-minutes: 60
+    env:
+      ACTION: ${{ inputs.action || 'deploy' }}
+      TAG: ${{ inputs.tag || github.event.release.tag_name }}
+      GH_TOKEN: ${{ github.token }}
+      GATE_TOLERANCE: ${{ inputs.force && '1000' || '1' }}
+    steps:
+      - name: model.sh
+        run: |
+          if [ "$ACTION" = rollback ]; then
+            ~/datathon/infra/model.sh rollback
+          else
+            ~/datathon/infra/model.sh deploy "${TAG:?укажи тег релиза}"
+          fi
