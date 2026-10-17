@@ -23,7 +23,7 @@ MAX_LENGTH_SEC = 10.0  # max_length_sec: длинный отрезок реже�
 # Кассир «ушёл» — только если его нет дольше 3 с: клиент или стойка могут перекрыть его на секунду-две.
 # Клиент «ушёл» — если его нет дольше 2 с (трек рвётся в дверях); второй посетитель — дольше 3 с.
 LEAVE_SEAT_D = 0.3  # кассир «у места» — ближе 0,3 роста к своему месту
-TAIL_LEAVE_SEC = 0.5  # кассира нет в последние полсекунды ролика — ушёл (запись кончилась раньше HOLD_SEC)
+TAIL_LEAVE_SEC = 0.5  # native: кассира нет в последние полсекунды; обычная выборка сохраняет прежнее сглаживание
 HOLD_SEC = {"cashier_present": 3.0, "client_present": 2.0, "visitors": 3.0, "foreign_on_desk": 3.0,
             "phone_at_head": 2.0, "bag_on_desk": 1.5, "screen_on": 1.5, "two_at_cashier": 2.0}
 
@@ -61,11 +61,13 @@ def segments(states: list[dict], fps: float) -> list[dict]:
     ts = [st["t"] for st in states]
     dt = 1 / fps
     # кассир пропал в конце ролика (ушёл, и запись кончилась) — это уход, даже если пропал меньше чем на HOLD_SEC.
-    # Считается по сырому сигналу и в секундах: сглаживание большинством на разной частоте кадров сдвигает
-    # конец по-разному (на 4 кадр/с X-28 ловился, на 30 — нет)
-    raw = [st["cashier_present"] for st in states]
+    # Только native использует сырой хвост: прежняя логика при SAMPLE_FPS=4 должна остаться неизменной.
+    native = os.environ.get("SAMPLE_FPS", "4") in ("native", "0")
+    values = [st["cashier_present"] for st in states]
+    raw = values if native else smooth(values, round(SMOOTH_SEC * fps))
     tail = next((i for i in range(len(raw) - 1, -1, -1) if raw[i]), -1) + 1
-    if len(raw) - tail >= round(TAIL_LEAVE_SEC * fps) and tail > 0:
+    minimum = max(1, round(TAIL_LEAVE_SEC * fps)) if native else fps
+    if len(raw) - tail >= minimum and tail > 0:
         series["cashier_present"][tail:] = [0] * (len(raw) - tail)
     out: list[dict] = []
     for i, t in enumerate(ts):
