@@ -5,7 +5,7 @@
   docker compose --profile tools run --rm -v ../computer-vision/tests:/app/tests:ro cv python /app/tests/test_posture.py
 """
 
-from decision.posture import hand_low, hands_together, risen, wrist_in
+from decision.posture import hand_low, hands_together, risen
 from decision.steps import analyze
 
 FPS = 4
@@ -31,14 +31,17 @@ def cashier_pose(lw=(180, 450), rw=(230, 450), hips=True):
     return pose(pts)
 
 
-def test_hand_low_one_wrist_under_desk():
-    assert hand_low(cashier_pose(lw=(180, 560)), DESK_BOTTOM)  # левая под столешницей, правая над
-    assert not hand_low(cashier_pose(), DESK_BOTTOM)  # обе над
-    assert not hand_low(cashier_pose(lw=(180, 560), rw=(230, 560)), DESK_BOTTOM)  # обе под — не «спрятал»
+def test_hand_low_one_wrist_below_hips():
+    h = CASHIER[3] - CASHIER[1]  # бёдра на 470, порог 470 + 0,1 × 350 = 505
+    assert hand_low(cashier_pose(lw=(180, 560)), h)  # левая ниже бёдер, правая над столом
+    assert not hand_low(cashier_pose(), h)  # обе над столом
+    assert not hand_low(cashier_pose(lw=(180, 480)), h)  # руки на коленях — обычная поза, не «спрятал»
+    assert not hand_low(cashier_pose(lw=(180, 560), rw=(230, 560)), h)  # обе вниз — не «спрятал»
+    assert not hand_low(cashier_pose(lw=(180, 560), hips=False), h)  # без бёдер судить нельзя
     hidden = cashier_pose()
-    hidden[15] = [0, 0, 0.0]  # левая кисть не видна, локоть опущен ниже середины корпуса
-    hidden[13] = [165, 440, 0.9]
-    assert hand_low(hidden, DESK_BOTTOM)
+    hidden[15] = [0, 0, 0.0]  # левая кисть не видна, локоть ниже бёдер
+    hidden[13] = [165, 490, 0.9]
+    assert hand_low(hidden, h)
 
 
 def test_hands_together_over_desk():
@@ -47,9 +50,7 @@ def test_hands_together_over_desk():
     assert not hands_together(cashier_pose(lw=(200, 520), rw=(215, 522)), DESK_BOTTOM, (100, 400))  # под столом
 
 
-def test_wrist_in_safe_and_risen():
-    assert wrist_in(cashier_pose(rw=(550, 380)), SAFE)
-    assert not wrist_in(cashier_pose(), SAFE)
+def test_risen():
     assert risen(pose({23: (280, 300), 24: (300, 300)}), seated_hip_y=360, height=270)
     assert not risen(pose({23: (280, 350), 24: (300, 350)}), seated_hip_y=360, height=270)
 
@@ -83,18 +84,16 @@ def test_keep_after_money_then_hand_under_desk():
     assert acts(boxes) == []
 
 
-def test_count_by_hand_and_put_safe():
-    got = acts(video(16, lambda t: cashier_pose(lw=(200, 450), rw=(215, 452)) if 1 <= t < 3
-                     else cashier_pose(rw=(550, 380)) if 5 <= t < 6.5 else cashier_pose()))
-    assert [(a, tgt) for _, a, tgt in got] == [("count_by_hand", None), ("put", "safe")]
-    assert 0.5 <= got[0][0] <= 1.5 and 4.5 <= got[1][0] <= 5.5
+def test_count_by_hand():
+    got = acts(video(16, lambda t: cashier_pose(lw=(200, 450), rw=(215, 452)) if 1 <= t < 3 else cashier_pose()))
+    assert [(a, tgt) for _, a, tgt in got] == [("count_by_hand", None)] and 0.5 <= got[0][0] <= 1.5
 
 
 def test_no_pose_no_actions():
     boxes = video(8, lambda t: None)
     res = analyze(boxes, FPS)
     assert not any(a.get("source") == "pose" for a in res["actions"])
-    assert not any(st["_hand_hidden"] or st["_counting"] or st["_reach_safe"] or st["_client_up"] for st in res["states"])
+    assert not any(st["_hand_hidden"] or st["_counting"] or st["_client_up"] for st in res["states"])
 
 
 if __name__ == "__main__":

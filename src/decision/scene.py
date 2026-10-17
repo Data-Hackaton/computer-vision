@@ -11,7 +11,7 @@ import statistics
 from collections import defaultdict
 
 from cv.geometry import center_in, iou, median_box, overlap_share
-from decision.posture import POSE_HOLD_SEC, hand_low, hands_together, hip_y, risen, wrist_in
+from decision.posture import POSE_HOLD_SEC, hand_low, hands_together, hip_y, risen
 
 SIGNALS = ["cashier_present", "client_present", "visitors", "money_on_desk", "money_in_machine", "bundles_at_cashier",
            "foreign_on_desk", "bag_on_desk", "phone_at_head", "screen_on", "two_at_cashier"]
@@ -25,8 +25,8 @@ SCREEN_ON = 0.35
 MONEY = {"banknotes", "id_card"}
 # Порог уверенности для классов, по которым срабатывают нарушения без контекста (вещь, сумка, телефон)
 MIN_CONF = {"foreign_object": 0.5, "bag": 0.45, "phone": 0.5}
-# Подсказки по позе считаются только вскоре после денег в руках у кассира: кисть под столом сама по себе — не событие
-MONEY_RECENT_SEC, SAFE_RECENT_SEC = 5.0, 10.0
+# Подсказки по позе считаются только вскоре после денег в руках у кассира: опущенная рука сама по себе — не событие
+MONEY_RECENT_SEC = 5.0
 
 
 def frames_of(boxes: list[dict]) -> list[tuple[float, list[dict]]]:
@@ -168,7 +168,8 @@ def scene_states(frames: list[tuple[float, list[dict]]], roles: dict[int, str], 
         clients = [b for b in people if b.get("attributes", {}).get("role") == "client"]
         hands = [b["bbox"] for b in boxes if b["cls"] == "hand"]
         notes = [b["bbox"] for b in boxes if b["cls"] in MONEY]
-        cashier_pose = next((p for c in cashiers if (p := pose_of(t, c))), None)
+        posed = next((c for c in cashiers if pose_of(t, c)), None)
+        cashier_pose = pose_of(t, posed) if posed else None
         client_up = False
         for c in clients:
             p = pose_of(t, c)
@@ -224,14 +225,12 @@ def scene_states(frames: list[tuple[float, list[dict]]], roles: dict[int, str], 
                                + (c["bbox"][3] - seat["y"]) ** 2) ** 0.5 / seat["h"] for c in cashiers)
             if cashiers and seat else None,
             # подсказки по позе кассира (decision.posture; без поз — всегда False), действия из них — decision.steps:
-            # кисть ушла под столешницу после денег в руках (X-1, keep); кисти вместе над столом при деньгах
-            # (X-34, count_by_hand); кисть в сейфе после денег в руках (X-13, put → safe); клиент встал (ранний уход)
-            "_hand_hidden": bool(cashier_pose and table and t - money_t <= MONEY_RECENT_SEC
-                                 and hand_low(cashier_pose, table[3])),
+            # кисть ушла ниже бёдер после денег в руках (X-1, keep); кисти вместе над столом при деньгах
+            # (X-34, count_by_hand); клиент встал (ранний уход)
+            "_hand_hidden": bool(cashier_pose and t - money_t <= MONEY_RECENT_SEC
+                                 and hand_low(cashier_pose, posed["bbox"][3] - posed["bbox"][1])),
             "_counting": bool(cashier_pose and table and (at_cashier or t - money_t <= 2.0)
                               and hands_together(cashier_pose, table[3], (table[0], table[2]))),
-            "_reach_safe": bool(cashier_pose and safe and t - money_t <= SAFE_RECENT_SEC
-                                and wrist_in(cashier_pose, safe)),
             "_client_up": client_up,
         })
     return states

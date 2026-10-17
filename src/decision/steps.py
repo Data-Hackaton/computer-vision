@@ -199,14 +199,14 @@ def pose_actions(states: list[dict], actions: list[dict], fps: float) -> list[di
     False — список пуст, поведение прежнее.
       _hand_hidden ≥ 1 с  → keep (кассир оставил деньги у себя, X-1): при клиенте правило L3 — violation;
       _counting ≥ 1,5 с   → count_by_hand, если рядом нет загрузки в машинку (X-34);
-      _reach_safe ≥ 0,5 с → put banknotes → safe, не чаще раза в 10 с (X-13 с правилом «без машинки — в сейф»);
-      _client_up          → person_leave client сдвигается к моменту, когда клиент встал (ранний уход)."""
-    if not states or not any(st.get("_hand_hidden") or st.get("_counting") or st.get("_reach_safe")
-                             or st.get("_client_up") for st in states):
+      _client_up          → person_leave client сдвигается к моменту, когда клиент встал (ранний уход).
+    Кисть в сейфе как put → safe пробовали и убрали: в чистых X-14, X-35, X-39 кассир так же тянется к сейфу
+    за сумкой и за деньгами, а в X-13 момент закладки не совпал — одни ложные."""
+    if not states or not any(st.get("_hand_hidden") or st.get("_counting") or st.get("_client_up") for st in states):
         return []
     ts = [st["t"] for st in states]
     out: list[dict] = []
-    for a, b in runs([st["_hand_hidden"] for st in states], ts, fps, 1.0):
+    for a, b in runs([st["_hand_hidden"] for st in states], ts, fps, 1.5):
         if not any(x["action"] == "keep" and abs(x["t"] - a) < 5 for x in out):
             out.append({"t": round(a, 2), "t_end": round(b, 2), "action": "keep", "actor": "cashier", "object": "banknotes",
                         "source": "pose"})
@@ -215,12 +215,6 @@ def pose_actions(states: list[dict], actions: list[dict], fps: float) -> list[di
         if not any(abs(t - a) <= 3 for t in machine):
             out.append({"t": round(a, 2), "t_end": round(b, 2), "action": "count_by_hand", "actor": "cashier",
                         "object": "banknotes", "source": "pose"})
-    last_safe = -1e9
-    for a, b in runs([st["_reach_safe"] for st in states], ts, fps, 0.5):
-        if a - last_safe >= 10:
-            out.append({"t": round(a, 2), "t_end": round(b, 2), "action": "put", "actor": "cashier", "object": "banknotes",
-                        "target": "safe", "source": "pose"})
-            last_safe = a
     for a, _ in runs([st["_client_up"] for st in states], ts, fps, 0.5):
         for x in actions:
             if x["action"] == "person_leave" and x.get("actor") == "client" and 0 <= x["t"] - a < 4:

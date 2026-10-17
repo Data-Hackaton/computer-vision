@@ -27,9 +27,12 @@
 |---|---|
 | `DETECTOR` | `rfdetr` (по умолчанию для прода), `yolo`, `stub` — заглушка по датасету |
 | `DETECTOR_WEIGHTS` | пусто — `data/runs/rfdetr/det_l1-rfdetr-small/checkpoint_best_total.pth` или `data/runs/yolo/det_l1-yolo26s/weights/best.pt` |
-| `SAMPLE_FPS` | кадров в секунду на анализ, 4 |
+| `SAMPLE_FPS` | кадров в секунду на анализ, 4; `native` — каждый кадр видео (не больше `FRAME_BUDGET` = 9000 кадров на видео) |
 | `DETECTOR_CONF` | порог уверенности, 0,35 |
 | `DETECTOR_DEVICE` | `cpu` или номер GPU; пусто — GPU, если есть |
+| `DETECTOR_VIEWS` | пусто — один проход; JSON `[{"name":"orig","weight":0.76},{"name":"unsharp",…},{"name":"clahe",…}]` — ансамбль видов кадра с WBF (`cv.views`) |
+| `TRACKER` | `greedy` — жадный трекер людей; `bytetrack`, `botsort` — трекеры Ultralytics (`decision.tracking`) |
+| `POSE` | `off`; `lite`, `full`, `heavy` — позы людей MediaPipe в `attributes.pose` (`cv.pose`), сигналы из них — `decision.posture`; `POSE_EVERY` — каждый n-й кадр |
 | `STEP_CLASSIFIER` | `hybrid` — правила + обученный классификатор шагов (нет модели — `rules`); `rules` |
 | `STEP_MODEL` | пусто — `data/runs/sop/steps_<DETECTOR>.joblib` |
 | `VLM_URL` | пусто — без VLM (по умолчанию); `http://vlm:8080` — включить |
