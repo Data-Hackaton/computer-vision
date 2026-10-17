@@ -8,7 +8,8 @@
 DETECTOR_WEIGHTS — веса (по умолчанию лучший прогон в data/runs), SAMPLE_FPS — кадров в секунду на анализ,
 DETECTOR_CONF — порог уверенности, DETECTOR_DEVICE — cpu или номер GPU (по умолчанию GPU, если есть). Интерфейс Detection общий: worker и бэкенд не зависят от выбора.
 MODEL_DIR — каталог релиза модели (model.json, веса, классификатор шагов — scripts/publish-model.sh): задаёт всё это
-поверх окружения, см. apply_model_dir.
+поверх окружения, см. apply_model_dir. DETECTOR_VIEWS — ансамбль видов кадра (исходный, резкость, контраст) с весами,
+см. cv.views; пусто — один проход.
 """
 
 import csv
@@ -170,14 +171,29 @@ class FrameDetector(Detector):
         self.conf = float(os.environ.get("DETECTOR_CONF", "0.35"))
         self.fps = float(os.environ.get("SAMPLE_FPS", "4"))
         self.device = os.environ.get("DETECTOR_DEVICE") or None
+        from cv.views import parse_views  # cv.views → cv.channels импортирует этот модуль
+
+        self.views = parse_views(os.environ.get("DETECTOR_VIEWS"))
         self.load()
 
     def load(self) -> None:
         raise NotImplementedError
 
-    def predict(self, frames: list) -> list[list[tuple[str, list[float], float]]]:
-        """Кадры BGR → по каждому [(класс, [x1, y1, x2, y2], уверенность)]."""
+    def predict(self, frames: list, conf: float | None = None) -> list[list[tuple[str, list[float], float]]]:
+        """Кадры BGR → по каждому [(класс, [x1, y1, x2, y2], уверенность)]; conf — порог (по умолчанию DETECTOR_CONF)."""
         raise NotImplementedError
+
+    def predict_frames(self, frames: list) -> list[list[tuple[str, list[float], float]]]:
+        """Один проход или ансамбль видов (DETECTOR_VIEWS): каждый вид с порогом COMPONENT_CONF, слияние WBF,
+        затем DETECTOR_CONF по слитой уверенности."""
+        if not self.views:
+            return self.predict(frames)
+        from cv.views import COMPONENT_CONF, TRANSFORMS, wbf
+
+        per_view = [self.predict([TRANSFORMS[name](f) for f in frames], conf=min(COMPONENT_CONF, self.conf))
+                    for name, _ in self.views]
+        weights = [w for _, w in self.views]
+        return [[d for d in wbf([p[i] for p in per_view], weights) if d[2] >= self.conf] for i in range(len(frames))]
 
     def detect(self, video: Path) -> list[dict]:
         """Только L1: боксы по кадрам после постобработки и признаки по пикселям экрана и сейфа."""
@@ -186,7 +202,7 @@ class FrameDetector(Detector):
         pixels: dict[float, dict] = {}
 
         def flush():
-            preds = self.predict([f for _, f in chunk])
+            preds = self.predict_frames([f for _, f in chunk])
             for (t, frame), dets in zip(chunk, preds):
                 raw.append((t, dets))
                 pixels[round(t, 3)] = {tuple(round(v, 1) for v in b): pixel_attributes(frame, c, b)
@@ -213,6 +229,8 @@ class FrameDetector(Detector):
         boxes = self.detect(video)
         res = analyze(boxes, self.fps)
         note = f"{self.weights.name}, {self.fps:g} кадр/с"
+        if self.views:
+            note += ", виды " + " / ".join(f"{n} {w:.2f}" for n, w in self.views)
         if VLM_URL:  # спорные моменты — VLM (сервис vlm); недоступна — остаются правила
             ask = Asker(video, res["zones"])
             res = with_vlm(res, ask)
@@ -229,8 +247,8 @@ class YoloDetector(FrameDetector):
         self.model = YOLO(str(self.weights))
         self.names = self.model.names
 
-    def predict(self, frames: list) -> list[list[tuple[str, list[float], float]]]:
-        results = self.model.predict(frames, imgsz=640, conf=self.conf, verbose=False, device=self.device)
+    def predict(self, frames: list, conf: float | None = None) -> list[list[tuple[str, list[float], float]]]:
+        results = self.model.predict(frames, imgsz=640, conf=conf or self.conf, verbose=False, device=self.device)
         return [[(self.names[int(c)], b.tolist(), float(s))
                  for b, c, s in zip(r.boxes.xyxy.cpu().numpy(), r.boxes.cls.cpu().numpy(), r.boxes.conf.cpu().numpy())]
                 for r in results]
@@ -247,9 +265,9 @@ class RfDetrDetector(FrameDetector):
         self.model = {"small": RFDETRSmall, "nano": RFDETRNano}[size](
             pretrain_weights=str(self.weights), resolution=resolution, **({"device": self.device} if self.device else {}))
 
-    def predict(self, frames: list) -> list[list[tuple[str, list[float], float]]]:
+    def predict(self, frames: list, conf: float | None = None) -> list[list[tuple[str, list[float], float]]]:
         rgb = [f[:, :, ::-1].copy() for f in frames]
-        dets = self.model.predict(rgb, threshold=self.conf)
+        dets = self.model.predict(rgb, threshold=conf or self.conf)
         dets = dets if isinstance(dets, list) else [dets]
         return [[(CLASS_NAMES[int(c)], b.tolist(), float(s)) for b, c, s in zip(d.xyxy, d.class_id, d.confidence)
                  if 0 <= int(c) < len(CLASS_NAMES)] for d in dets]
@@ -273,6 +291,7 @@ def apply_model_dir() -> str | None:
     for name, var in (("conf", "DETECTOR_CONF"), ("rfdetr_size", "RFDETR_SIZE"), ("rfdetr_resolution", "RFDETR_RESOLUTION")):
         if params.get(name) is not None:
             env[var] = str(params[name])
+    env["DETECTOR_VIEWS"] = json.dumps(params["views"]) if params.get("views") else ""  # ансамбль видов кадра, cv.views
     os.environ.update(env)
     return manifest["tag"]
 

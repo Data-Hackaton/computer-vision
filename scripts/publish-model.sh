@@ -7,6 +7,8 @@
 #   --steps <joblib>  классификатор шагов, обученный на L1 этих весов (decision.learned --target steps --fit);
 #                     без него cv-worker с этим релизом работает только на правилах
 #   --conf <порог>    DETECTOR_CONF (по умолчанию 0.35); --weights <файл> — веса не по умолчанию для прогона
+#   --views '<json>'  ансамбль видов кадра (cv.views), в params.views:
+#                     '[{"name":"orig","weight":0.76},{"name":"unsharp","weight":0.12},{"name":"clahe","weight":0.12}]'
 #   --tag <тег>       свой тег вместо model-<детектор>-<прогон>-<дата>
 #   --draft           черновик релиза: на сервер не выкатывается, пока его не опубликуют
 #   --out <каталог>   только собрать релиз (model.json и файлы), ничего не публиковать
@@ -18,11 +20,12 @@ usage() { sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
 [ $# -ge 2 ] || usage
 detector=$1 run_dir=${2%/}
 shift 2
-steps='' conf=0.35 weights='' tag='' draft='' out='' build_only=''
+steps='' conf=0.35 views='' weights='' tag='' draft='' out='' build_only=''
 while [ $# -gt 0 ]; do
   case $1 in
     --steps) steps=$2; shift 2 ;;
     --conf) conf=$2; shift 2 ;;
+    --views) views=$2; shift 2 ;;
     --weights) weights=$2; shift 2 ;;
     --tag) tag=$2; shift 2 ;;
     --draft) draft=--draft; shift ;;
@@ -51,12 +54,12 @@ cp "$weights" "$out/"
 [ -z "$steps" ] || cp "$steps" "$out/steps.joblib"
 
 # Манифест: что читает cv.detectors.apply_model_dir, плюс происхождение — коммиты кода и данных, метрики обучения
-python3 - "$out" "$tag" "$detector" "$(basename "$weights")" "${steps:+steps.joblib}" "$conf" "$run_dir" \
+python3 - "$out" "$tag" "$detector" "$(basename "$weights")" "${steps:+steps.joblib}" "$conf" "$views" "$run_dir" \
   "$(git -C "$repo" rev-parse HEAD)" "$(git -C "$repo/../data_prepare" rev-parse HEAD 2>/dev/null || true)" <<'EOF'
 import csv, hashlib, json, sys, time
 from pathlib import Path
 
-out, tag, detector, weights, steps, conf, run_dir, code, data = sys.argv[1:]
+out, tag, detector, weights, steps, conf, views, run_dir, code, data = sys.argv[1:]
 out, run_dir = Path(out), Path(run_dir)
 
 
@@ -84,17 +87,22 @@ def train_metrics():
     return None
 
 
+params = {"conf": float(conf)}
+if views:  # проверка, как в cv.views.parse_views: известные виды, веса не все нули
+    params["views"] = [{"name": v["name"], "weight": float(v["weight"])} for v in json.loads(views)]
+    assert {v["name"] for v in params["views"]} <= {"orig", "unsharp", "clahe"}, views
+    assert sum(v["weight"] for v in params["views"]) > 0, views
 manifest = {"tag": tag, "detector": detector, "run": run_dir.name,
             "weights": {"file": weights, "sha256": sha256(weights)},
             "steps": {"file": steps, "sha256": sha256(steps)} if steps else None,
-            "params": {"conf": float(conf)}, "code_commit": code, "data_commit": data or None,
+            "params": params, "code_commit": code, "data_commit": data or None,
             "train_metrics": train_metrics(), "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
 (out / "model.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=1) + "\n")
 print(json.dumps(manifest, ensure_ascii=False, indent=1))
 EOF
 
 [ -z "$build_only" ] || { echo "собрано в $out, не публикую"; exit 0; }
-notes="Модель $detector, прогон $run, порог $conf$([ -n "$steps" ] && echo ", с классификатором шагов" || echo ", L2 только правила").
+notes="Модель $detector, прогон $run, порог $conf${views:+, виды кадра $views}$([ -n "$steps" ] && echo ", с классификатором шагов" || echo ", L2 только правила").
 Выкатка на k3s-lab — workflow model-deploy (оценка, сравнение с текущей, откат при сбое)."
 gh release create "$tag" -R Data-Hackaton/computer-vision --target main --title "$tag" --notes "$notes" $draft \
   "$out"/*
