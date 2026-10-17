@@ -1,88 +1,97 @@
 # computer-vision
 
-Два пакета и Temporal-воркер на task queue `cv-gpu`:
+Видео → боксы (L1) → журнал действий (L2) → события со статусами (L3, движок `data_prepare`). Temporal-воркер `cv-worker` на task queue `cv-gpu` берёт одну задачу за раз (GTX 1650, 4 ГБ).
 
-- `cv` — видео → `timeline.json`: люди, руки, объекты, треки, примитивные события.
-- `decision` — `timeline.json` + `rules.yaml` → нарушения в схеме API: тип, таймкод, кадры, описание, норматив.
-
-Воркер берёт одну активность за раз: на GTX 1650 4 ГБ модели грузятся по очереди. Цель — не больше 60 секунд на видео длиной 145 секунд.
+- `cv` — L1: детекторы, постобработка стекла, кадры-доказательства, воркер, обучение и предразметка.
+- `decision` — L2 по схеме NVIDIA SOP Monitoring: треки и роли, отрезки, шаги процедуры, оценка.
 
 ## Ограничения на модели
 
-- Только open source с лицензией, разрешающей коммерческое использование: права на решение уходят ForteBank. Лицензию каждой модели записываем в таблицу ниже.
-- Ultralytics YOLO не берём: AGPL-3.0.
-- Никакого распознавания и идентификации лиц. Роль человека (кассир, клиент, инкассатор) определяется по положению и поведению трека.
-- После загрузки весов работа без интернета (`HF_HUB_OFFLINE=1`).
+- Только open source с лицензией, разрешающей коммерческое использование: права на решение уходят ForteBank.
+- Ultralytics YOLO (AGPL-3.0) — только для сравнения; в прод идёт RF-DETR (Apache-2.0).
+- Никакого распознавания лиц. Роль человека (кассир, клиент) — по поведению трека.
+- После загрузки весов работа без интернета.
 - Никаких зон в абсолютных координатах кадра: финальное видео снято под другим углом.
 
-| Задача | Кандидат | Лицензия |
+| Задача | Модель | Лицензия |
 |---|---|---|
-| Люди, объекты | RT-DETR / D-FINE | Apache-2.0 |
-| Open-vocab объекты (деньги, сумка, ящик) | OWLv2 / Grounding DINO | Apache-2.0 |
-| Поза, запястья | ViTPose / RTMPose | Apache-2.0 |
-| Трекинг | ByteTrack (`supervision`) | MIT |
+| Люди, деньги, предметы (14 классов `data_prepare/cvat/labels.json`) | RF-DETR small, YOLO26s для сравнения | Apache-2.0 / AGPL-3.0 |
+| Предразметка для CVAT | Grounding DINO tiny | Apache-2.0 |
+| Трекинг людей | свой: IoU + близость центров (`decision/scene.py`) | — |
 
-## Контракт `timeline.json` (черновик)
+## Детектор в сервисе
 
-Словарь `events[].kind` фиксируется после каталога нарушений (фаза 0 roadmap). Время везде в секундах от начала видео.
+Переменные cv-worker (`infra/.env`):
 
-```json
-{
-  "video": {"duration_sec": 25.93, "fps": 30, "width": 464, "height": 848, "sample_fps": 5},
-  "tracks": [
-    {
-      "id": 3, "cls": "person", "role": "cashier",
-      "frames": [{"t": 0.2, "bbox": [x1, y1, x2, y2], "conf": 0.91, "wrists": [[x, y], [x, y]]}]
-    },
-    {"id": 7, "cls": "cash", "frames": [{"t": 4.0, "bbox": [x1, y1, x2, y2], "conf": 0.66}]}
-  ],
-  "events": [
-    {"kind": "hand_over", "t_start": 21.4, "t_peak": 22.0, "t_end": 22.8,
-     "actors": [3, 5], "objects": [7], "bbox": [x1, y1, x2, y2], "conf": 0.74}
-  ]
-}
-```
+| Переменная | Значение |
+|---|---|
+| `DETECTOR` | `rfdetr` (по умолчанию для прода), `yolo`, `stub` — заглушка по датасету |
+| `DETECTOR_WEIGHTS` | пусто — `data/runs/rfdetr/det_l1-rfdetr-small/checkpoint_best_total.pth` или `data/runs/yolo/det_l1-yolo26s/weights/best.pt` |
+| `SAMPLE_FPS` | кадров в секунду на анализ, 4 |
+| `DETECTOR_CONF` | порог уверенности, 0,35 |
+| `DETECTOR_DEVICE` | `cpu` или номер GPU; пусто — GPU, если есть |
+| `STEP_CLASSIFIER` | `rules` |
 
-## `rules.yaml` (черновик)
+## L2 по схеме NVIDIA SOP Monitoring
 
-Одно правило на тип нарушения. `norm` заполняется только по тексту документа на adilet.zan.kz: номер пункта по памяти не пишем, за это снимают баллы.
+У NVIDIA ([sop-monitoring-blueprints](https://github.com/NVIDIA/sop-monitoring-blueprints), Apache-2.0) три шага:
+1. DDM режет поток на отрезки по границам событий: `threshold`, `min_length_sec`, `max_length_sec`.
+2. VLM Cosmos-Reason2 выбирает для отрезка номер шага из `actions.json`.
+3. SOP-чекер ищет пропущенные и переставленные шаги.
 
-```yaml
-- id: cash_handover_outside_tray
-  type: "Передача наличных в обход установленного порядка"
-  predicate: hand_over            # функция в decision/predicates.py
-  params: {min_conf: 0.5}
-  norm:
-    document: "<название акта НБРК>"
-    clause: "<пункт>"
-    url: "https://adilet.zan.kz/rus/docs/<id>"
-    quote: "<цитата из пункта>"
-  description: "{actor_from} передаёт {object} {actor_to} на {t:.1f} с."
-  evidence: [before, peak, after]
-```
+Качество меряют метрикой `seq_accuracy`. Две модели (DDM и VLM на 2B параметров) не укладываются в GTX 1650 и 5 минут на видео, а данных для обучения DDM нет. Поэтому части заменены так:
 
-Описание составляется только из того, что видно на видео; выводы о данных, которых на видео нет (проводки, сверка), запрещены п. 7 ТЗ.
+| NVIDIA | Здесь |
+|---|---|
+| DDM: границы событий | `decision/scene.py`: сигналы состояния сцены по кадрам из боксов L1 — клиент есть, деньги на столе, в машинке, у кассира (сколько пачек), вещь или сумка на столе, удостоверение, телефон в руке. `decision/steps.py`: сглаживание (`SMOOTH_SEC`), минимальная длина (`MIN_LENGTH_SEC`, `HOLD_SEC`), граница отрезка — смена состояния, длинный отрезок режется (`MAX_LENGTH_SEC`) |
+| VLM: отрезок → шаг | `RulesClassifier`: переход между отрезками → действие журнала (`put banknotes desk`, `person_leave client`, `split_bundle`, `phone_call` и т. д.). Интерфейс — под будущий VLM (`STEP_CLASSIFIER`) |
+| `actions.json` | `python -m decision.sop` → `data_prepare/reference/actions.json` из `scenarios.yaml`: пронумерованные шаги, «действие вне процедуры», `actions_can_be_skipped` |
+| SOP-чекер | L3 `data_prepare`: порядок и пропуски шагов → предупреждения, нормативные инварианты → нарушения |
+| `seq_accuracy` | `decision/sop.py`: 1 − редакционное расстояние / длина эталона по видимым L2 шагам |
 
-## Запуск
+**Роли.** Кассир — самый долгий трек и любой трек у его места (вернувшийся кассир — новый трек). Клиент — остальные треки дольше секунды. Отражения отсеяны в L1.
 
-Через docker compose из `infra` (образ `cv`, GPU через CDI, данные — `data_prepare/data` → `/data`; `src/` смонтирован, правки кода без пересборки):
+**Экземпляры сценариев.**
+- Новый `client_service` заводится на каждый приход клиента. Иначе L3 спутает деньги двух клиентов: будут ложные «пересчёт после ухода» и пропущенный `desk_carryover`.
+- Уход кассира без клиента — `leave_workplace`.
+- Остальное без клиента — `cash_handling`.
+
+Все экземпляры `partial`: L2 видит не все шаги (осмотр удостоверения, бумаги), и пропущенный шаг не становится замечанием.
+
+**Что лежит на столе в первом кадре**, считается положенным до начала видео. Так ловятся деньги прошлого клиента в начале ролика.
+
+## Оценка
 
 ```sh
 cd ../infra
-docker compose --profile tools build cv
-docker compose --profile tools run --rm cv python -m cv.prelabel --round r1          # предразметка Grounding DINO
-docker compose --profile tools run --rm cv python -m cv.train_yolo --dataset det_r1   # YOLO26s
-docker compose --profile tools run --rm cv python -m cv.train_rfdetr --dataset det_r1 # RF-DETR small
-docker compose --profile tools run --rm cv python -m cv.eval_detector --dataset det_r1 --yolo <best.pt> --rfdetr <checkpoint.pth>
+docker compose --profile tools run --rm cv python -m cv.infer --detector rfdetr     # кэш L1: data/features/<sha>/l1_rfdetr.json
+docker compose --profile tools run --rm cv python -m decision.eval --detector rfdetr # вердикт, таймкод ±3 с, seq_accuracy
 ```
 
-На GTX 1650 (4 ГБ): Grounding DINO только в fp32 (в fp16 — NaN), вход 640 px; Ultralytics сам выключает AMP; YOLO26s при 864 px влезает только с batch 1 — для обучения уменьшать imgsz или брать yolo26n.
+- **dev** — видео, кадры которых в train детектора, и X-1 (по его журналу писались правила).
+- **honest** — val детектора (X-19, X-27, X-37, X-45) и 16 видео с нарушениями, тип которых определён по кадрам: `data_prepare/reference/violations_unreviewed.yaml`, `confirmed: false`.
+
+## Обучение
+
+```sh
+cd ../infra
+docker compose --profile tools run --rm data-prepare build-datasets --round r1 r1b --name det_l1
+docker compose --profile tools run --rm cv python -m cv.train_yolo --dataset det_l1 --run det_l1-yolo26s --imgsz 640 --epochs 50 --patience 15
+docker compose --profile tools run --rm cv python -m cv.train_rfdetr --dataset det_l1 --run det_l1-rfdetr-small --resolution 512 --batch 1 --accum 16 --epochs 30
+docker compose --profile tools run --rm cv python -m cv.eval_detector --dataset det_l1 --yolo <best.pt> --rfdetr <checkpoint.pth>
+```
+
+`det_l1` собирается из выгрузок CVAT r1 и r1b. Предразметка пока не проверена человеком и принята как есть. Ручные правки попадут в датасет повторным `cvat-io export`.
+
+На GTX 1650 рабочий стол занимает ~1,25 ГБ памяти:
+- RF-DETR small при 640 px и batch 2 не помещается, работает 512 px и batch 1;
+- Grounding DINO — только fp32 (в fp16 выдаёт NaN), вход 640 px.
 
 ## Стекло и отражения
 
-В кадре стеклянная перегородка с дверью: в ней отражаются кассир и клиенты, сквозь неё видны люди в соседнем помещении — это главный источник ложных срабатываний. Детектор учит класс `ignore_zone` (бокс по стеклянной области) и класс `reflection` (человек в стекле). Постобработка детекций кадра:
-- мелкие предметы (`hand`, `banknotes`, `id_card`, `phone`, `bag`, `foreign_object`, `computer`), у которых центр внутри `ignore_zone` и бокс не пересекает `table`, отбрасываются;
-- `reflection` в журнал действий не попадает;
-- `person` целиком внутри зоны, не в двери и не у её низа — считается отражением.
+В кадре стеклянная перегородка с дверью: в ней отражаются кассир и клиенты, сквозь неё видны люди в соседнем помещении. Детектор учит класс `ignore_zone` (стекло) и `reflection` (человек в стекле).
 
-Та же логика уже работает в предразметке (`src/cv/prelabel.py`: `video_zone`, `SMALL_IN_ZONE`).
+Постобработка (`cv/geometry.py`, общая с предразметкой) работает так:
+- **Зона стекла** — медиана предсказанных `ignore_zone` по видео.
+- **Мелкие предметы.** Если центр внутри зоны и бокс не пересекает `table`, предмет отбрасывается.
+- **Люди.** `person` целиком внутри зоны, не в двери и не у её низа — это `reflection`. Если на месте одного человека есть и `person`, и `reflection`, остаётся более уверенный бокс.

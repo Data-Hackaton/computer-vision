@@ -17,6 +17,8 @@ from PIL import Image, ImageDraw
 from torchvision.ops import batched_nms
 from transformers import AutoModelForZeroShotObjectDetection, AutoProcessor
 
+from cv.geometry import SMALL_IN_ZONE, center_in, inside, intersects, overlap_share
+
 MODEL_ID = "IDEA-Research/grounding-dino-tiny"  # Apache-2.0
 
 # класс → (фразы для модели, порог, сколько боксов максимум на кадр)
@@ -41,7 +43,6 @@ CLASSES: dict[str, tuple[list[str], float, int]] = {
 # выбрасываются, а люди целиком внутри и не дотягивающие до её низа (не в дверном проёме) — это reflection.
 REGION_PHRASES = ["glass wall", "glass window"]
 REGION_FRAMES = 6
-SMALL_IN_ZONE = {"hand", "banknotes", "id_card", "phone", "bag", "foreign_object", "computer"}
 # Атрибуты CVAT, которые следуют из фразы
 PHRASE_ATTRS = {
     "jacket": {"kind": "clothing"}, "coat": {"kind": "clothing"},
@@ -118,25 +119,6 @@ def video_zone(model, processor, paths: list[Path], device: str, dtype) -> list[
     if not found:
         return None
     return [float(torch.tensor([b[k] for b in found]).median()) for k in range(4)]
-
-
-def center_in(b: list[float], zone: list[float]) -> bool:
-    cx, cy = (b[0] + b[2]) / 2, (b[1] + b[3]) / 2
-    return zone[0] <= cx <= zone[2] and zone[1] <= cy <= zone[3]
-
-
-def inside(b: list[float], zone: list[float], tol: float = 4.0) -> bool:
-    return b[0] >= zone[0] - tol and b[1] >= zone[1] - tol and b[2] <= zone[2] + tol and b[3] <= zone[3] + tol
-
-
-def intersects(a: list[float], b: list[float]) -> bool:
-    return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
-
-
-def overlap_share(a: list[float], b: list[float]) -> float:
-    """Доля площади a, лежащая внутри b."""
-    inter = max(0.0, min(a[2], b[2]) - max(a[0], b[0])) * max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
-    return inter / max(1e-6, (a[2] - a[0]) * (a[3] - a[1]))
 
 
 def main() -> None:

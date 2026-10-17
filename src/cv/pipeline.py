@@ -12,7 +12,7 @@ from cv.detectors import REFERENCE_DIR, Detection
 from data_prepare.reference_actions import check_instance, check_video
 from data_prepare.sop_events import build_events
 
-ACTOR_RU = {"cashier": "Кассир", "client": "Клиент", "collector": "Инкассатор"}
+ACTOR_RU = {"cashier": "Кассир", "client": "Клиент", "collector": "Инкассатор", "visitor": "Второй посетитель"}
 ACTION_RU = {
     "person_enter": "входит в помещение", "person_leave": "выходит из помещения", "give": "передаёт",
     "inspect": "рассматривает", "put": "кладёт", "take": "берёт", "sort_banknotes": "раскладывает купюры по стопкам",
@@ -25,7 +25,7 @@ ACTION_RU = {
 OBJECT_RU = {"banknotes": "купюры", "id_card": "удостоверение", "bag": "сумку", "phone": "телефон",
              "document": "документ", "foreign_object": "личные вещи", "computer": "компьютер"}
 TARGET_RU = {"cash_machine": "в счётную машинку", "safe": "в сейф", "safe_top": "на сейф", "desk": "на кассовый стол",
-             "client": "клиенту", "cashier": "кассиру", "bag": "из сумки"}
+             "client": "клиенту", "cashier": "кассиру", "bag": "из сумки", "door": "к двери"}
 WITH_OBJECT = {"give", "put", "take", "inspect"}  # у остальных глаголов объект уже в тексте действия
 HIDDEN_ON_EVIDENCE = {"ignore_zone", "reflection", "door"}
 
