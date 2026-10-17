@@ -259,14 +259,24 @@ def analyze(boxes: list[dict], fps: float, *, calibrate: bool = True, collect_ev
     # уход кассира — с момента, когда он последний раз был у своего места (встал и пошёл), а не когда пропал из
     # кадра; но не раньше его последнего действия со столом (положил деньги и ушёл — деньги остались на столе).
     # Для обеих политик: без сдвига X-28 ловится на 15,8 с вместо 7,3 — мимо окна ±3 с от метки
+    # Уход начинается не раньше последнего зафиксированного действия кассира: встал с места, но ещё работал у
+    # сейфа или с деньгами (X-24: с места в 3,5 с, сейф до 8 с, ушёл в 8–12) — это ещё не уход.
     for a in actions:
         if a["action"] == "person_leave" and a["actor"] == "cashier":
             at_seat = [st["t"] for st in states if st["t"] <= a["t"] and st["_cashier_d"] is not None
                        and st["_cashier_d"] < LEAVE_SEAT_D]
-            last_desk = [b["t"] for b in actions if b.get("target") == "desk" and b["t"] < a["t"]]
+            last_act = [b["t"] for b in actions if b is not a and b["t"] < a["t"] and b.get("actor", "cashier") == "cashier"
+                        and b["action"] not in ("person_leave", "person_enter", "use_laptop", "_cashier_back")]
             if at_seat:
-                a["t_seen"] = a["t"]  # когда пропал из кадра — для сверки с журналом (decision.evidence)
-                a["t"] = round(max([at_seat[-1]] + [t + 0.1 for t in last_desk]), 2)
+                a["t_seen"] = a["t"]  # когда перестал быть «на работе» — для сверки с журналом (decision.evidence)
+                a["t"] = round(max([at_seat[-1]] + [t + 0.1 for t in last_act]), 2)
+            # когда кассир исчез из кадра (вышел из помещения): для «ценностей на столе при уходе» момент нарушения —
+            # этот, а не когда он встал из-за стола (X-15: встал в 6,5 с, ушёл в 15)
+            back = min([b["t"] for b in actions if b["action"] == "_cashier_back" and b["t"] > a["t"]], default=float("inf"))
+            seen = [t for t, bs in frames if a["t"] <= t < back
+                    and any(b.get("attributes", {}).get("role") == "cashier" for b in bs)]
+            a["t_gone"] = round(seen[-1] + 1 / fps, 2) if seen else a["t"]
+            # Момент «в дверях» по боксу door пробовали: в X-15 бокс кассира перекрывает дверь уже у стола — шум
     # ECL (decision.evidence): достоверность каждого действия до правил L3; выключен — действия как есть
     from decision import evidence  # decision.evidence → decision.learned импортирует этот модуль
 
