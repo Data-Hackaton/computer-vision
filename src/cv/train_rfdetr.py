@@ -41,6 +41,8 @@ def main() -> None:
         output_dir=str(output_dir),
         epochs=args.epochs, batch_size=args.batch, grad_accum_steps=args.accum, lr=1e-4,
         early_stopping=True, early_stopping_patience=10, num_workers=4, tensorboard=False,
+        # в fp16 на GTX 1650 оценки детекций на валидации уходят в NaN (17.10): --no-amp выключает и fp16-оценку
+        **({"fp16_eval": False} if args.no_amp else {}),
     )
     print(f"→ {output_dir}")
 

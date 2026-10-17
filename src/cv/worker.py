@@ -9,6 +9,7 @@ import asyncio
 import json
 import os
 import tempfile
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -89,11 +90,21 @@ def run_cv(task: dict) -> dict:
 
 
 async def main() -> None:
+    global _detector
+    # несколько воркеров на CPU делят ядра: по CV_THREADS потоков torch на каждый (по умолчанию 6)
+    if threads := os.environ.get("CV_THREADS"):
+        import torch
+
+        torch.set_num_threads(int(threads))
+    # модель — при старте, а не на первой задаче: первая задача жюри не ждёт загрузки весов
+    started = time.time()
+    _detector = get_detector()
     client = await Client.connect(os.environ.get("TEMPORAL_ADDRESS", "temporal:7233"),
                                   namespace=os.environ.get("TEMPORAL_NAMESPACE", "default"))
     worker = Worker(client, task_queue=CV_QUEUE, activities=[run_cv], activity_executor=ThreadPoolExecutor(1),
                     max_concurrent_activities=1)
-    print(f"cv-worker: очередь {CV_QUEUE}, детектор {os.environ.get('DETECTOR', 'stub')}", flush=True)
+    print(f"cv-worker: очередь {CV_QUEUE}, детектор {os.environ.get('DETECTOR', 'stub')}, "
+          f"готов за {time.time() - started:.0f} с", flush=True)
     await worker.run()
 
 
