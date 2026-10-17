@@ -71,13 +71,27 @@ def build_video_events(det: Detection, spec: dict, video_name: str = "video") ->
         from decision.temporal import corroborate
 
         corroborate(e, action, [a for acts in instance_actions for a in acts])
-        # ценности остались без присмотра, когда кассир вышел из помещения, а не когда встал из-за стола
-        if (e.get("title") == "Ценности на столе при уходе кассира" and action and action.get("t_gone")
-                and action.get("evidence", {}).get("policy") == "temporal_v2"):
-            e["t_start"] = e["t_end"] = float(action["t_gone"])
+        violation_moment(e, action)
     from decision.temporal import deduplicate
 
     return deduplicate(events) + sequence_events(instance_actions, spec)
+
+
+VISITOR_CONFIRM_SEC = 3.0  # посторонний «у кассы», когда пробыл там время удержания сигнала (HOLD_SEC visitors)
+
+
+def violation_moment(e: dict, action: dict | None) -> None:
+    """Таймкод нарушения — когда оно состоялось, а не когда началось действие (только для temporal_v2):
+    посторонний у кассы — после времени удержания, а не в первый кадр входа; ценности без присмотра — на середине
+    ухода кассира: между тем, как он встал из-за стола, и тем, как исчез из кадра (из помещения выходят посередине,
+    в коридоре за стеклом его видно ещё долго)."""
+    if not action or action.get("evidence", {}).get("policy") != "temporal_v2" or e["status"] != "violation":
+        return
+    title = e.get("title") or ""
+    if title.startswith("Постороннее лицо") and e["event"] == "person_enter":
+        e["t_start"] = e["t_end"] = round(e["t_start"] + VISITOR_CONFIRM_SEC, 2)
+    elif title == "Ценности на столе при уходе кассира" and action.get("t_gone"):
+        e["t_start"] = e["t_end"] = round((float(action["t"]) + float(action["t_gone"])) / 2, 2)
 
 
 def uncertain(e: dict, p: float | None) -> None:

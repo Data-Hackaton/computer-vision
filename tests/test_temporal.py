@@ -114,6 +114,23 @@ def test_collection_bag_is_not_personal_item():
     assert not [x for x in res["actions"] if x.get("object") == "foreign_object"]
 
 
+def test_violation_moment_anchors():
+    from cv.pipeline import VISITOR_CONFIRM_SEC, violation_moment
+
+    a = {"t": 10.0, "action": "person_enter", "actor": "visitor", "evidence": {"policy": "temporal_v2"}}
+    e = {"t_start": 10.0, "t_end": 10.0, "event": "person_enter", "status": "violation", "title": "Постороннее лицо у кассы"}
+    violation_moment(e, a)
+    assert e["t_start"] == 10.0 + VISITOR_CONFIRM_SEC
+    leave = {"t": 6.5, "t_gone": 20.0, "action": "person_leave", "actor": "cashier", "evidence": {"policy": "temporal_v2"}}
+    e = {"t_start": 6.5, "t_end": 6.5, "event": "person_leave", "status": "violation",
+         "title": "Ценности на столе при уходе кассира"}
+    violation_moment(e, leave)
+    assert e["t_start"] == 13.25
+    legacy = {"t_start": 10.0, "t_end": 10.0, "event": "person_enter", "status": "violation", "title": "Постороннее лицо у кассы"}
+    violation_moment(legacy, {"t": 10.0, "action": "person_enter", "actor": "visitor"})
+    assert legacy["t_start"] == 10.0  # legacy не трогаем
+
+
 if __name__ == "__main__":
     tests = [f for name, f in sorted(globals().items()) if name.startswith("test_")]
     for f in tests:
