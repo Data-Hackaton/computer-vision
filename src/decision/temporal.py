@@ -245,12 +245,17 @@ def personal_item_actions(frames, zones, fps, confirm, gap):
                           "held":any(overlap_share(b["bbox"], h) > .2 for h in hands),
                           "client_present":any(p.get("attributes", {}).get("role") == "client" for p in boxes),
                           "conf":b["conf"]})
+    # Сумка, после которой на столе появляются купюры, — инкассаторская (из неё достают деньги: X-13, X-14),
+    # а не личная вещь. Купюры замечаем по боксам banknotes не раньше чем через 5 с после сумки на столе
+    cash_times = [t for t, boxes in frames if any(b["cls"] == "banknotes" for b in boxes)]
     out = []
     for tid, track in enumerate(tracks):
         prior = [s for s in track if s["body_overlap"] > .5]
         if not prior:
             continue
         separate = [s for s in track if s["t"] > prior[0]["t"] and not s["held"] and not s["client_present"]]
+        if separate and any(t >= separate[0]["t"] + 5 for t in cash_times):
+            continue
         if len(separate) >= 2 and separate[-1]["t"]-separate[0]["t"]+1/fps >= confirm:
             out.append({"t": separate[0]["t"], "action":"put", "actor":"cashier", "object":"foreign_object", "target":"desk",
                         "evidence":{"policy":"temporal_v2", "level":"observed", "item_id":tid, "samples":track}})

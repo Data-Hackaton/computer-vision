@@ -13,6 +13,7 @@
 #   --tracker <имя>   трекер людей L2 (decision.tracking), в params.tracker: greedy (по умолчанию), bytetrack, botsort
 #   --sample-fps <n>  кадров в секунду на анализ, в params.sample_fps: native — каждый кадр видео (по умолчанию 4)
 #   --pose <вид>      позы людей MediaPipe (cv.pose) в params.pose: lite, full, heavy; --pose-every <n> — каждый n-й кадр
+#   --decision-policy <имя>  политика L2 (decision.temporal) в params.decision_policy: legacy (по умолчанию), temporal_v2
 #   --tag <тег>      свой тег вместо model-<детектор>-<прогон>-<дата>
 #   --draft           черновик релиза: на сервер не выкатывается, пока его не опубликуют
 #   --out <каталог>   только собрать релиз (model.json и файлы), ничего не публиковать
@@ -24,7 +25,7 @@ usage() { sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
 [ $# -ge 2 ] || usage
 detector=$1 run_dir=${2%/}
 shift 2
-steps='' ecl='' conf=0.35 views='' tracker='' sample_fps='' pose='' pose_every='' weights='' tag='' draft='' out='' build_only=''
+steps='' ecl='' conf=0.35 views='' tracker='' sample_fps='' pose='' pose_every='' decision_policy='' weights='' tag='' draft='' out='' build_only=''
 while [ $# -gt 0 ]; do
   case $1 in
     --steps) steps=$2; shift 2 ;;
@@ -35,6 +36,7 @@ while [ $# -gt 0 ]; do
     --sample-fps) sample_fps=$2; shift 2 ;;
     --pose) pose=$2; shift 2 ;;
     --pose-every) pose_every=$2; shift 2 ;;
+    --decision-policy) decision_policy=$2; shift 2 ;;
     --weights) weights=$2; shift 2 ;;
     --tag) tag=$2; shift 2 ;;
     --draft) draft=--draft; shift ;;
@@ -55,6 +57,7 @@ case ${tracker:-greedy} in greedy|bytetrack|botsort) ;; *) echo "трекер: g
 [[ -z $sample_fps || $sample_fps == native || $sample_fps =~ ^[0-9]+(\.[0-9]+)?$ ]] || { echo "--sample-fps: native или число"; exit 1; }
 case ${pose:-off} in off|lite|full|heavy) ;; *) echo "--pose: lite, full или heavy"; exit 1 ;; esac
 [[ -z $pose_every || $pose_every =~ ^[1-9][0-9]*$ ]] || { echo "--pose-every: целое ≥ 1"; exit 1; }
+case ${decision_policy:-legacy} in legacy|temporal_v2) ;; *) echo "--decision-policy: legacy или temporal_v2"; exit 1 ;; esac
 run=$(basename "$run_dir")
 tag=${tag:-model-$detector-$run-$(date +%Y%m%d)}
 [[ $tag =~ ^model-[A-Za-z0-9._-]+$ ]] || { echo "тег должен быть вида model-…: $tag"; exit 1; }
@@ -72,12 +75,13 @@ data_repo=${DATA_REPO:-$(dirname "$(git -C "$repo" rev-parse --path-format=absol
 data_commit=$(git -C "$data_repo" rev-parse HEAD) || { echo "укажите DATA_REPO с репозиторием разметки"; exit 1; }
 
 # Манифест: что читает cv.detectors.apply_model_dir, плюс происхождение — коммиты кода и данных, метрики обучения
-python3 - "$out" "$tag" "$detector" "$(basename "$weights")" "${steps:+steps.joblib}" "${ecl:+ecl.joblib}" "$conf" "$views" "$tracker" "$sample_fps" "$pose" "$pose_every" "$run_dir" \
+python3 - "$out" "$tag" "$detector" "$(basename "$weights")" "${steps:+steps.joblib}" "${ecl:+ecl.joblib}" "$conf" "$views" "$tracker" "$sample_fps" "$pose" "$pose_every" "$decision_policy" "$run_dir" \
   "$(git -C "$repo" rev-parse HEAD)" "$data_commit" <<'EOF'
 import csv, hashlib, json, sys, time
 from pathlib import Path
 
-out, tag, detector, weights, steps, ecl, conf, views, tracker, sample_fps, pose, pose_every, run_dir, code, data = sys.argv[1:]
+(out, tag, detector, weights, steps, ecl, conf, views, tracker, sample_fps, pose, pose_every, decision_policy, run_dir,
+ code, data) = sys.argv[1:]
 out, run_dir = Path(out), Path(run_dir)
 
 
@@ -118,6 +122,8 @@ if pose and pose != "off":
     params["pose"] = pose
     if pose_every:
         params["pose_every"] = int(pose_every)
+if decision_policy and decision_policy != "legacy":
+    params["decision_policy"] = decision_policy
 manifest = {"tag": tag, "detector": detector, "run": run_dir.name,
             "weights": {"file": weights, "sha256": sha256(weights)},
             "steps": {"file": steps, "sha256": sha256(steps)} if steps else None,
@@ -130,7 +136,7 @@ print(json.dumps(manifest, ensure_ascii=False, indent=1))
 EOF
 
 [ -z "$build_only" ] || { echo "собрано в $out, не публикую"; exit 0; }
-notes="Модель $detector, прогон $run, порог $conf${views:+, виды кадра $views}${tracker:+, трекер $tracker}${sample_fps:+, кадров в секунду $sample_fps}${pose:+, поза $pose}$([ -n "$steps" ] && echo ", с классификатором шагов" || echo ", L2 только правила").
+notes="Модель $detector, прогон $run, порог $conf${views:+, виды кадра $views}${tracker:+, трекер $tracker}${sample_fps:+, кадров в секунду $sample_fps}${pose:+, поза $pose}${decision_policy:+, политика L2 $decision_policy}$([ -n "$steps" ] && echo ", с классификатором шагов" || echo ", L2 только правила").
 ECL: ${ecl:-выключен}.
 Выкатка на k3s-lab — workflow model-deploy (оценка, сравнение с текущей, откат при сбое)."
 gh release create "$tag" -R Data-Hackaton/computer-vision --target main --title "$tag" --notes "$notes" $draft \
