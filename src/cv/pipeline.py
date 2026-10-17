@@ -73,12 +73,13 @@ def sequence_events(instance_actions: list[list[dict]], spec: dict) -> list[dict
 
 
 def load_norms() -> dict:
-    """Нормы: выверенные вручную norms.yaml поверх пунктов из аудита (norms_review.yaml)."""
-    out = {}
-    for name in ("norms_review.yaml", "norms.yaml"):
+    """Нормы: корпус (norms_corpus.yaml, полные тексты) → аудит пакета проверки (norms_review.yaml) → выверенные
+    вручную norms.yaml; поля следующего файла поверх полей предыдущего."""
+    out: dict[str, dict] = {}
+    for name in ("norms_corpus.yaml", "norms_review.yaml", "norms.yaml"):
         path = REFERENCE_DIR / name
-        if path.exists():
-            out.update(yaml.safe_load(path.read_text()) or {})
+        for key, norm in ((yaml.safe_load(path.read_text()) or {}) if path.exists() else {}).items():
+            out[key] = {**out.get(key, {}), **norm}
     return out
 
 
