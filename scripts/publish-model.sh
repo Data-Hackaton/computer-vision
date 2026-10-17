@@ -6,6 +6,7 @@
 #       --steps ../data_prepare/data/runs/sop/steps_yolo.joblib
 #   --steps <joblib>  классификатор шагов, обученный на L1 этих весов (decision.learned --target steps --fit);
 #                     без него cv-worker с этим релизом работает только на правилах
+#   --ecl <joblib>    калибратор действий ECL формата 2; без него ECL выключен
 #   --conf <порог>    DETECTOR_CONF (по умолчанию 0.35); --weights <файл> — веса не по умолчанию для прогона
 #   --views '<json>'  ансамбль видов кадра (cv.views), в params.views:
 #                     '[{"name":"orig","weight":0.76},{"name":"unsharp","weight":0.12},{"name":"clahe","weight":0.12}]'
@@ -23,10 +24,11 @@ usage() { sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
 [ $# -ge 2 ] || usage
 detector=$1 run_dir=${2%/}
 shift 2
-steps='' conf=0.35 views='' tracker='' sample_fps='' pose='' pose_every='' weights='' tag='' draft='' out='' build_only=''
+steps='' ecl='' conf=0.35 views='' tracker='' sample_fps='' pose='' pose_every='' weights='' tag='' draft='' out='' build_only=''
 while [ $# -gt 0 ]; do
   case $1 in
     --steps) steps=$2; shift 2 ;;
+    --ecl) ecl=$2; shift 2 ;;
     --conf) conf=$2; shift 2 ;;
     --views) views=$2; shift 2 ;;
     --tracker) tracker=$2; shift 2 ;;
@@ -48,6 +50,7 @@ case $detector in
 esac
 [ -f "$weights" ] || { echo "нет весов $weights"; exit 1; }
 [ -z "$steps" ] || [ -f "$steps" ] || { echo "нет классификатора шагов $steps"; exit 1; }
+[ -z "$ecl" ] || [ -f "$ecl" ] || { echo "нет модели ECL $ecl"; exit 1; }
 case ${tracker:-greedy} in greedy|bytetrack|botsort) ;; *) echo "трекер: greedy, bytetrack или botsort"; exit 1 ;; esac
 [[ -z $sample_fps || $sample_fps == native || $sample_fps =~ ^[0-9]+(\.[0-9]+)?$ ]] || { echo "--sample-fps: native или число"; exit 1; }
 case ${pose:-off} in off|lite|full|heavy) ;; *) echo "--pose: lite, full или heavy"; exit 1 ;; esac
@@ -63,14 +66,18 @@ fi
 mkdir -p "$out"
 cp "$weights" "$out/"
 [ -z "$steps" ] || cp "$steps" "$out/steps.joblib"
+[ -z "$ecl" ] || cp "$ecl" "$out/ecl.joblib"
+# git-common-dir указывает на основной checkout даже при запуске из вложенного worktree.
+data_repo=${DATA_REPO:-$(dirname "$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir)")/../data_prepare}
+data_commit=$(git -C "$data_repo" rev-parse HEAD) || { echo "укажите DATA_REPO с репозиторием разметки"; exit 1; }
 
 # Манифест: что читает cv.detectors.apply_model_dir, плюс происхождение — коммиты кода и данных, метрики обучения
-python3 - "$out" "$tag" "$detector" "$(basename "$weights")" "${steps:+steps.joblib}" "$conf" "$views" "$tracker" "$sample_fps" "$pose" "$pose_every" "$run_dir" \
-  "$(git -C "$repo" rev-parse HEAD)" "$(git -C "$repo/../data_prepare" rev-parse HEAD 2>/dev/null || true)" <<'EOF'
+python3 - "$out" "$tag" "$detector" "$(basename "$weights")" "${steps:+steps.joblib}" "${ecl:+ecl.joblib}" "$conf" "$views" "$tracker" "$sample_fps" "$pose" "$pose_every" "$run_dir" \
+  "$(git -C "$repo" rev-parse HEAD)" "$data_commit" <<'EOF'
 import csv, hashlib, json, sys, time
 from pathlib import Path
 
-out, tag, detector, weights, steps, conf, views, tracker, sample_fps, pose, pose_every, run_dir, code, data = sys.argv[1:]
+out, tag, detector, weights, steps, ecl, conf, views, tracker, sample_fps, pose, pose_every, run_dir, code, data = sys.argv[1:]
 out, run_dir = Path(out), Path(run_dir)
 
 
@@ -116,12 +123,15 @@ manifest = {"tag": tag, "detector": detector, "run": run_dir.name,
             "steps": {"file": steps, "sha256": sha256(steps)} if steps else None,
             "params": params, "code_commit": code, "data_commit": data or None,
             "train_metrics": train_metrics(), "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
+if ecl:
+    manifest["ecl"] = {"file": ecl, "sha256": sha256(ecl)}
 (out / "model.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=1) + "\n")
 print(json.dumps(manifest, ensure_ascii=False, indent=1))
 EOF
 
 [ -z "$build_only" ] || { echo "собрано в $out, не публикую"; exit 0; }
 notes="Модель $detector, прогон $run, порог $conf${views:+, виды кадра $views}${tracker:+, трекер $tracker}${sample_fps:+, кадров в секунду $sample_fps}${pose:+, поза $pose}$([ -n "$steps" ] && echo ", с классификатором шагов" || echo ", L2 только правила").
+ECL: ${ecl:-выключен}.
 Выкатка на k3s-lab — workflow model-deploy (оценка, сравнение с текущей, откат при сбое)."
 gh release create "$tag" -R Data-Hackaton/computer-vision --target main --title "$tag" --notes "$notes" $draft \
   "$out"/*

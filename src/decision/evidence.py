@@ -11,13 +11,15 @@
 внутри t..t_end) есть журнальное действие того же класса, один к одному. person_enter:visitor в журналах нет:
 отрицательные — все кандидаты на чистых видео, положительные — X-18 и X-30 у секунды метки.
   python -m decision.evidence --detector yolo --fit          # LOO по видео, пороги, data/runs/sop/ecl_yolo.joblib
-ECL=on + ECL_MODEL (из params.ecl релиза) включают калибровку в analyze; ECL_VIDEO=X-1 — LOO-модель без этого видео
-(честная оценка decision.eval на видео с журналом).
+ECL=on + ECL_MODEL (из model.json.ecl) включают калибровку в analyze. ECL_VIDEO=X-1 выбирает внешний LOO-fold:
+модель и пороги не используют это видео; пороги — по внутреннему LOO. Это проверка ECL при фиксированном L1/L2,
+а не переобучение детектора или классификатора шагов на каждом fold.
 """
 
 import argparse
 import csv
 import json
+import math
 import os
 from collections import defaultdict
 from pathlib import Path
@@ -178,30 +180,66 @@ _cache: dict = {}
 def load():
     import joblib
 
-    path = model_path()
-    if not path.exists():
-        return None
-    if _cache.get("path") != str(path):
+    path = model_path().resolve()
+    try:
+        st = path.stat()
+    except OSError as e:
+        raise RuntimeError(f"ECL включён, но модель недоступна: {path}") from e
+    fingerprint = (str(path), st.st_mtime_ns, st.st_size)
+    if _cache.get("fingerprint") != fingerprint:
+        try:
+            saved = joblib.load(path)
+            validate(saved)
+        except Exception as e:
+            raise RuntimeError(f"Некорректная модель ECL: {path}: {e}; переобучите decision.evidence --fit") from e
         _cache.clear()
-        _cache.update(path=str(path), saved=joblib.load(path))
+        _cache.update(fingerprint=fingerprint, saved=saved)
     return _cache["saved"]
+
+
+def validate(saved: dict) -> None:
+    if not isinstance(saved, dict) or saved.get("format_version") != 2:
+        raise ValueError("ожидается формат ECL 2 с отдельными порогами outer folds")
+    names = saved["features"]
+    if not names or any(not isinstance(n, str) for n in names) or len(set(names)) != len(names):
+        raise ValueError("некорректные имена признаков")
+    if set(saved["folds"]) != set(saved["training_videos"]):
+        raise ValueError("нет outer fold для одного из обучающих видео")
+    for part in [saved, *saved["folds"].values()]:
+        if part.get("model") is None:
+            if part is saved or not part.get("reason") or part.get("thresholds") != {}:
+                raise ValueError("пропущенный fold должен иметь причину и не иметь порогов")
+            continue
+        model = part["model"]
+        if list(model.classes_) != [0, 1] or model.n_features_in_ != len(names):
+            raise ValueError("классы или число признаков модели не совпадают")
+        prob = np.asarray(model.predict_proba(np.zeros((1, len(names)))))
+        if prob.shape != (1, 2) or not np.isfinite(prob).all():
+            raise ValueError("некорректный predict_proba")
+        if any(c not in CALIBRATED or not np.isfinite(t) or not 0 <= t <= 1
+               for c, t in part["thresholds"].items()):
+            raise ValueError("некорректные пороги классов")
+
+
+def select_fold(saved: dict, video: str | None) -> dict:
+    # Неизвестное видео не участвовало в ECL fit; известное с непригодным fold НЕ получает full model.
+    return saved["folds"][video] if video in saved["training_videos"] else saved
 
 
 def apply(actions: list[dict], ctx: dict) -> None:
     """p каждому действию; ниже порога класса — certain: False. ECL_VIDEO — LOO-модель без этого видео."""
     saved = load()
-    if not saved or not actions:
+    if not actions:
         return
-    video = os.environ.get("ECL_VIDEO")
-    model = saved.get("loo", {}).get(video, saved["model"]) if video else saved["model"]
-    x = np.array([vector(a, ctx, saved["features"]) for a in actions], dtype=float)
-    p = model.predict_proba(x)[:, 1]
-    for a, pa in zip(actions, p):
-        cls = step_class(a)
-        if cls not in saved["thresholds"]:  # класс без разметки в журналах — оценки нет, действие как есть
-            continue
-        a["p"] = round(float(pa), 3)
-        if pa < saved["thresholds"][cls]:
+    part = select_fold(saved, os.environ.get("ECL_VIDEO"))
+    selected = [a for a in actions if step_class(a) in part["thresholds"]]
+    if part["model"] is None or not selected:
+        return
+    x = np.array([vector(a, ctx, saved["features"]) for a in selected], dtype=float)
+    p = part["model"].predict_proba(x)[:, 1]
+    for a, pa in zip(selected, p):
+        a["p"] = float(pa)
+        if pa < part["thresholds"][step_class(a)]:
             a["certain"] = False
 
 
@@ -254,7 +292,6 @@ def candidates(detector: str, cache_tag: str | None = None):
     from cv.infer import cache_path
     from decision.steps import analyze
 
-    os.environ["ECL"] = "off"
     with (DATA_DIR / "labels.csv").open() as f:
         rows = list(csv.DictReader(f))
     label_t = defaultdict(list)
@@ -271,9 +308,9 @@ def candidates(detector: str, cache_tag: str | None = None):
             continue
         path = cache_path(r["sha256"], detector, cache_tag)
         if not path.exists():
-            continue
+            raise ValueError(f"Нет L1-кэша для обучающего видео {name}: {path}")
         cache = json.loads(path.read_text())
-        res = analyze(cache["boxes"], cache["fps"])
+        res = analyze(cache["boxes"], cache["fps"], calibrate=False, collect_evidence=True)
         ctx, acts = res["ecl_context"], res["raw_actions"]
         ys = label(acts, journal, r["verdict"], label_t.get(name, []), name)
         for a, y in zip(acts, ys):
@@ -291,67 +328,104 @@ def make_model():
 
 
 def thresholds_from(p: np.ndarray, y: np.ndarray, cls: np.ndarray) -> dict[str, float]:
-    """Порог класса — самый строгий из сетки, при котором полнота верных ≥ RECALL_TARGET (все, если верных < 5);
-    без верных примеров — 0,5. Только классы из CALIBRATED: остальные ECL не оценивает."""
+    """Максимальный наблюдаемый порог с полнотой ≥ RECALL_TARGET; при <5 положительных сохраняем все.
+    Неуспешные folds (NaN) и классы без положительных не калибруются. Не округляем порог вверх."""
     out = {}
     for c in sorted(set(cls)):
         if c not in CALIBRATED:
             continue
         m = cls == c
-        pos = p[m & (y == 1)]
+        pos = np.sort(p[m & (y == 1) & np.isfinite(p)])
         if not len(pos):
-            out[str(c)] = 0.5
             continue
         need = 1.0 if len(pos) < 5 else RECALL_TARGET
-        best = 0.5
-        for thr in np.arange(0.05, 0.96, 0.05):
-            if np.mean(pos >= thr) >= need:
-                best = float(thr)
-        out[str(c)] = round(min(best, 0.95), 2)
+        required = math.ceil(need * len(pos))
+        out[str(c)] = float(pos[len(pos) - required])
     return out
 
 
-def fit(detector: str, cache_tag: str | None, out: Path) -> None:
-    import joblib
-    from sklearn.metrics import roc_auc_score
+def out_of_fold(x, y, videos) -> tuple[np.ndarray, dict]:
+    """Inner LOO: scaler и регрессия fit только на остальных видео."""
+    p = np.full(len(y), np.nan)
+    skipped = {}
+    for v in sorted(set(videos)):
+        train = videos != v
+        if len(set(y[train])) < 2:
+            skipped[str(v)] = "training split has fewer than two classes"
+            continue
+        model = make_model().fit(x[train], y[train])
+        p[~train] = model.predict_proba(x[~train])[:, 1]
+    return p, skipped
 
-    data = candidates(detector, cache_tag)
+
+def score_metrics(y, p) -> dict:
+    from sklearn.metrics import brier_score_loss, roc_auc_score
+
+    valid = np.isfinite(p)
+    return {"candidates": len(y), "positive": int(y.sum()), "scored": int(valid.sum()),
+            "omitted": int((~valid).sum()),
+            "auc": float(roc_auc_score(y[valid], p[valid])) if len(set(y[valid])) == 2 else None,
+            "brier": float(brier_score_loss(y[valid], p[valid])) if valid.any() else None}
+
+
+def train(data: list[dict]) -> dict:
+    """Nested LOO проверяет и модель, и выбор порога без меток outer test video."""
+    if not data or len({d["y"] for d in data}) < 2:
+        raise ValueError("ECL требует размеченные кандидаты обоих классов")
+
     names = sorted({k for d in data for k in d["f"]})
     x = np.array([[d["f"].get(n, 0.0) for n in names] for d in data], dtype=float)
     y = np.array([d["y"] for d in data])
     cls = np.array([d["cls"] for d in data])
     videos = np.array([d["video"] for d in data])
-    print(f"кандидатов {len(data)} на {len(set(videos))} видео: верных {int(y.sum())}, ложных {int((y == 0).sum())}")
-    for c in sorted(set(cls)):
-        m = cls == c
-        print(f"  {c:28} всего {m.sum():3d}, верных {int(y[m].sum()):3d}")
-    # LOO по видео
-    p = np.zeros(len(y))
-    loo = {}
+    p, cutoffs = np.full(len(y), np.nan), np.full(len(y), np.nan)
+    folds, fold_report = {}, {}
     for v in sorted(set(videos)):
         tr = videos != v
         if len(set(y[tr])) < 2:
+            part = {"model": None, "thresholds": {}, "reason": "training split has fewer than two classes"}
+            folds[str(v)] = part
+            fold_report[str(v)] = {"status": "skipped", "reason": part["reason"]}
             continue
-        m = make_model().fit(x[tr], y[tr])
-        p[~tr] = m.predict_proba(x[~tr])[:, 1]
-        loo[v] = m
-    if len(set(y)) == 2:
-        print(f"LOO AUC: {roc_auc_score(y, p):.3f}")
-    thr = thresholds_from(p, y, cls)
-    print("пороги:", thr)
+        inner, skipped = out_of_fold(x[tr], y[tr], videos[tr])
+        thr = thresholds_from(inner, y[tr], cls[tr])
+        model = make_model().fit(x[tr], y[tr])
+        p[~tr] = model.predict_proba(x[~tr])[:, 1]
+        cutoffs[~tr] = [thr.get(c, np.nan) for c in cls[~tr]]
+        folds[str(v)] = {"model": model, "thresholds": thr}
+        fold_report[str(v)] = {"status": "scored", "training_videos": sorted(set(videos[tr])),
+                               "thresholds": thr, "inner_skipped": skipped}
+    full_oof, skipped = out_of_fold(x, y, videos)
+    thr = thresholds_from(full_oof, y, cls)
+    report = {"method": "nested leave-one-video-out; fixed upstream L1/L2", "overall": score_metrics(y, p),
+              "folds": fold_report, "full_threshold_inner_skipped": skipped, "classes": {}}
     for c in sorted(set(cls)):
         m = cls == c
-        if c not in thr:
-            continue
-        t = thr[c]
-        keep = p[m] >= t
-        tp, fp = int((keep & (y[m] == 1)).sum()), int((keep & (y[m] == 0)).sum())
-        fn, tn = int((~keep & (y[m] == 1)).sum()), int((~keep & (y[m] == 0)).sum())
-        print(f"  {c:28} порог {t:.2f}: верных оставлено {tp}/{tp + fn}, ложных отсеяно {tn}/{tn + fp}")
-    model = make_model().fit(x, y)
+        assessed = m & np.isfinite(p) & np.isfinite(cutoffs)
+        keep = p >= cutoffs
+        report["classes"][str(c)] = {**score_metrics(y[m], p[m]), "threshold_assessed": int(assessed.sum()),
+                                    "positive_kept": int((assessed & keep & (y == 1)).sum()),
+                                    "positive_rejected": int((assessed & ~keep & (y == 1)).sum()),
+                                    "negative_rejected": int((assessed & ~keep & (y == 0)).sum())}
+    return {"format_version": 2, "model": make_model().fit(x, y), "features": names, "thresholds": thr,
+            "folds": folds, "training_videos": sorted(set(videos)), "evaluation": report}
+
+
+def fit(detector: str, cache_tag: str | None, out: Path) -> None:
+    import joblib
+
+    saved = train(candidates(detector, cache_tag))
+    saved["training_config"] = {"detector": detector, "cache_tag": cache_tag,
+                                "tracker": os.environ.get("TRACKER", "greedy"),
+                                "step_classifier": os.environ.get("STEP_CLASSIFIER", "rules")}
+    validate(saved)
     out.parent.mkdir(parents=True, exist_ok=True)
-    joblib.dump({"model": model, "features": names, "thresholds": thr, "loo": loo, "classes": CLASSES}, out)
-    print(f"→ {out}")
+    joblib.dump(saved, out)
+    report = out.with_suffix(".metrics.json")
+    report.write_text(json.dumps({**saved["evaluation"], "training_config": saved["training_config"]},
+                                 ensure_ascii=False, indent=2, allow_nan=False) + "\n")
+    print(json.dumps(saved["evaluation"]["overall"], ensure_ascii=False))
+    print(f"→ {out}\n→ {report}")
 
 
 def main() -> None:

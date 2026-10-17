@@ -16,6 +16,7 @@ attributes.low для второго прохода ByteTrack (decision.tracking
 """
 
 import csv
+import hashlib
 import json
 import os
 import time
@@ -344,6 +345,16 @@ def apply_model_dir() -> str | None:
     env["SAMPLE_FPS"] = "native" if rate in (0, "0", "native") else str(rate)
     env["POSE"] = params.get("pose") or "off"  # позы людей MediaPipe (cv.pose): lite / full / heavy
     env["POSE_EVERY"] = str(params.get("pose_every") or 1)
+    env.update(ECL="off", ECL_MODEL="")
+    if part := manifest.get("ecl"):
+        try:
+            path = (root / part["file"]).resolve()
+            if path.parent != root or hashlib.sha256(path.read_bytes()).hexdigest() != part["sha256"]:
+                raise ValueError("путь или SHA256 не совпадает")
+        except (OSError, KeyError, TypeError, ValueError) as e:
+            # worker допускает отсутствие первого model.json, но не повреждённый артефакт выбранного релиза.
+            raise RuntimeError(f"Некорректный ECL-артефакт релиза {manifest['tag']}: {e}") from e
+        env.update(ECL="on", ECL_MODEL=str(path))
     os.environ.update(env)
     return manifest["tag"]
 
@@ -353,4 +364,8 @@ def get_detector(kind: str | None = None) -> Detector:
     detectors = {"stub": StubDetector, "yolo": YoloDetector, "rfdetr": RfDetrDetector}
     if kind not in detectors:
         raise ValueError(f"неизвестный детектор: {kind}")
+    from decision import evidence
+
+    if evidence.enabled():
+        evidence.load()  # проверка до первой задачи, даже если видео не содержит действий
     return detectors[kind]()

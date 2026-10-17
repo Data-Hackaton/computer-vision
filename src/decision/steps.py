@@ -222,7 +222,7 @@ def pose_actions(states: list[dict], actions: list[dict], fps: float) -> list[di
     return out
 
 
-def analyze(boxes: list[dict], fps: float) -> dict:
+def analyze(boxes: list[dict], fps: float, *, calibrate: bool = True, collect_evidence: bool = False) -> dict:
     """Боксы L1 → треки и роли (в боксах), отрезки, действия, экземпляры.
 
     Слабые боксы людей (attributes.low, DETECTOR_LOW_CONF) только продлевают треки: продлившие остаются в boxes,
@@ -260,8 +260,10 @@ def analyze(boxes: list[dict], fps: float) -> dict:
     # ECL (decision.evidence): достоверность каждого действия до правил L3; выключен — действия как есть
     from decision import evidence  # decision.evidence → decision.learned импортирует этот модуль
 
-    ctx = evidence.context(frames, states, fps, zones, actions, states[-1]["t"] if states else 0.0)
-    if evidence.enabled():
+    use_ecl = calibrate and evidence.enabled()
+    ctx = evidence.context(frames, states, fps, zones, actions, states[-1]["t"] if states else 0.0) if (
+        use_ecl or collect_evidence) else None
+    if use_ecl:
         evidence.apply([a for a in actions if not a["action"].startswith("_")], ctx)
     return {"roles": roles, "segments": segs, "states": states, "zones": zones, "raw_actions": actions,
             "actions": [a for a in actions if not a["action"].startswith("_")], "instances": instances_of(actions),
