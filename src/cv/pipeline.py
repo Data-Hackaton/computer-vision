@@ -4,6 +4,7 @@
 import io
 import subprocess
 from pathlib import Path
+from collections import defaultdict, deque
 
 import yaml
 from PIL import Image, ImageDraw
@@ -54,7 +55,33 @@ def build_video_events(det: Detection, spec: dict, video_name: str = "video") ->
         instances.append((name, actions, steps))
     check_video_fsm(video_name, instance_actions, spec.get("video_invariants", []), [], hits)
     events = build_events(video_name, instances, hits)
+    # build_events сохраняет порядок равных событий; очередь различает даже полные дубликаты действия.
+    probabilities = defaultdict(deque)
+    for idx, actions in enumerate(instance_actions, start=1):
+        for a in actions:
+            key = (idx, a["t"], a["action"], a.get("actor"), a.get("object"), a.get("target"))
+            probabilities[key].append(a.get("p"))
+    for e in events:
+        key = (e["instance"], e["t_start"], e["event"], e.get("actor"), e.get("object"), e.get("target"))
+        queue = probabilities.get(key)
+        uncertain(e, queue.popleft() if queue else None)
     return events + sequence_events(instance_actions, spec)
+
+
+def uncertain(e: dict, p: float | None) -> None:
+    """Нарушение по действию, которому ECL (decision.evidence) не верит (certain: False), — предупреждение: детекция
+    могла ошибиться, человек проверит по записи. Как шаг такое действие по-прежнему засчитано (L3 его видит)."""
+    if p is None or e.get("certain", True) or e["status"] != "violation":
+        return
+    e["status"] = "warning"
+    e["ecl_p"] = p
+    e["message"] = " ".join(filter(None, (e.get("message"), uncertainty_note(e))))
+
+
+def uncertainty_note(e: dict) -> str:
+    if "ecl_p" not in e:
+        return ""
+    return f"Модель не уверена в самом действии (оценка {e['ecl_p']:.2f}) — проверьте по записи."
 
 
 def sequence_events(instance_actions: list[list[dict]], spec: dict) -> list[dict]:
@@ -143,7 +170,8 @@ def describe(e: dict, why: dict[str, str]) -> str:
     what = " ".join(x for x in (ACTION_RU.get(e["event"], e["event"]), obj, TARGET_RU.get(e.get("target") or "", "")) if x)
     seen = f"{e['t_start']:.1f} с: {who + ' ' if who else ''}{what}."
     reason = why.get(e.get("title") or "")
-    return f"{seen} {reason}." if reason else seen
+    message = f"{seen} {reason}." if reason else seen
+    return " ".join(filter(None, (message, uncertainty_note(e))))
 
 
 EVIDENCE_CONTEXT_SEC = 1.5  # соседние кадры-доказательства: до и после события

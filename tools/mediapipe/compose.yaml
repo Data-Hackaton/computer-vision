@@ -1,0 +1,10 @@
+# Проба поз MediaPipe: docker compose -f tools/mediapipe/compose.yaml run --rm mp python -m cv.pose --videos X-1 X-34
+# HACKATON — корень проекта с data_prepare (по умолчанию на три уровня выше: computer-vision/tools/mediapipe)
+services:
+  mp:
+    build: .
+    image: datathon-mediapipe
+    user: "${UID:-1000}:${GID:-1000}"
+    volumes:
+      - ${HACKATON:-../../..}/data_prepare/data:/data # кэш L1 и видео; пишет features/<sha>/pose_mp.json, runs/pose
+      - ../../src:/app/src:ro

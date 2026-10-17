@@ -5,15 +5,18 @@
             и эталонный журнал (reference/actions.yaml, violations.yaml); любое другое видео — пусто;
   yolo    — YOLO26 (Ultralytics, AGPL-3.0 — для сравнения, в прод не идёт);
   rfdetr  — RF-DETR (Apache-2.0).
-DETECTOR_WEIGHTS — веса (по умолчанию лучший прогон в data/runs), SAMPLE_FPS — кадров в секунду на анализ,
+DETECTOR_WEIGHTS — веса (по умолчанию лучший прогон в data/runs), SAMPLE_FPS — кадров в секунду на анализ (native или 0 —
+каждый кадр видео; кадров больше FRAME_BUDGET — реже, см. FrameDetector.sample_rate),
 DETECTOR_CONF — порог уверенности, DETECTOR_DEVICE — cpu или номер GPU (по умолчанию GPU, если есть). Интерфейс Detection общий: worker и бэкенд не зависят от выбора.
 MODEL_DIR — каталог релиза модели (model.json, веса, классификатор шагов — scripts/publish-model.sh): задаёт всё это
 поверх окружения, см. apply_model_dir. DETECTOR_VIEWS — ансамбль видов кадра (исходный, резкость, контраст) с весами,
 см. cv.views; пусто — один проход. DETECTOR_LOW_CONF — ниже DETECTOR_CONF: слабые боксы людей идут в L1 с
-attributes.low для второго прохода ByteTrack (decision.tracking); пусто — их нет.
+attributes.low для второго прохода ByteTrack (decision.tracking); пусто — их нет. POSE — позы людей MediaPipe
+(lite / full / heavy, см. cv.pose) в attributes.pose боксов person на каждом POSE_EVERY-м кадре; off — без поз.
 """
 
 import csv
+import hashlib
 import json
 import os
 import time
@@ -33,6 +36,10 @@ CLASS_NAMES = ["person", "reflection", "hand", "banknotes", "id_card", "cash_mac
 # Сколько боксов класса на кадре максимум (как в предразметке)
 MAX_PER_FRAME = {"person": 6, "reflection": 6, "hand": 8, "banknotes": 8, "id_card": 2, "cash_machine": 1, "safe": 1,
                  "door": 1, "phone": 2, "bag": 3, "table": 1, "foreign_object": 4, "computer": 2, "ignore_zone": 1}
+POSE_MIN_CONF = 0.5  # поза считается у боксов person не слабее этого
+# Кадров на анализ одного видео не больше: 5 минут при 30 кадр/с — длиннее любого видео датасета; больше на CPU
+# не уложится в лимит задачи жюри
+FRAME_BUDGET = int(os.environ.get("FRAME_BUDGET", "9000"))
 DEFAULT_WEIGHTS = {
     "yolo": DATA_DIR / "runs" / "yolo" / "det_l1-yolo26s" / "weights" / "best.pt",
     "rfdetr": DATA_DIR / "runs" / "rfdetr" / "det_l1-rfdetr-small" / "checkpoint_best_total.pth",
@@ -51,6 +58,9 @@ class Detection:
 
 class Detector:
     name = "base"
+
+    def close(self) -> None:
+        """Освободить native ресурсы до завершения executor/runtime."""
 
     def run(self, video: Path, sha256: str) -> Detection:
         raise NotImplementedError
@@ -170,13 +180,28 @@ class FrameDetector(Detector):
     def __init__(self) -> None:
         self.weights = Path(os.environ.get("DETECTOR_WEIGHTS") or DEFAULT_WEIGHTS[self.name])
         self.conf = float(os.environ.get("DETECTOR_CONF", "0.35"))
-        self.fps = float(os.environ.get("SAMPLE_FPS", "4"))
+        rate = os.environ.get("SAMPLE_FPS", "4")
+        self.fps = None if rate in ("native", "0") else float(rate)  # None — родная частота видео, каждый кадр
+        self.last_fps = self.fps or 0.0  # частота последнего detect(): с ней L2 считает окна в секундах
+        self.over_budget = False
         self.device = os.environ.get("DETECTOR_DEVICE") or None
         from cv.views import parse_views  # cv.views → cv.channels импортирует этот модуль
 
         self.views = parse_views(os.environ.get("DETECTOR_VIEWS"))
         self.low_conf = float(os.environ["DETECTOR_LOW_CONF"]) if os.environ.get("DETECTOR_LOW_CONF") else None
-        self.load()
+        from cv.pose import PoseEstimator  # cv.pose импортирует этот модуль
+
+        self.pose = PoseEstimator.from_env()  # None — без поз (POSE=off или нет mediapipe)
+        self.pose_every = max(1, int(os.environ.get("POSE_EVERY", "1")))
+        try:
+            self.load()
+        except Exception:
+            self.close()
+            raise
+
+    def close(self) -> None:
+        if self.pose:
+            self.pose.close()
 
     def load(self) -> None:
         raise NotImplementedError
@@ -198,15 +223,29 @@ class FrameDetector(Detector):
         weights = [w for _, w in self.views]
         return [[d for d in wbf([p[i] for p in per_view], weights) if d[2] >= floor] for i in range(len(frames))]
 
+    def sample_rate(self, video: Path) -> float:
+        """Частота прогона: SAMPLE_FPS, но не выше родной; native — каждый кадр. Если кадров на анализ больше
+        FRAME_BUDGET — реже: такое длинное видео на CPU не уложится в лимит задачи и не засчитается вовсе."""
+        import cv2
+
+        cap = cv2.VideoCapture(str(video))
+        native, frames = cap.get(cv2.CAP_PROP_FPS) or 30.0, cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0.0
+        cap.release()
+        fps = min(self.fps or native, native)
+        self.over_budget = bool(frames and frames * fps / native > FRAME_BUDGET)
+        return native * FRAME_BUDGET / frames if self.over_budget else fps
+
     def detect(self, video: Path) -> list[dict]:
         """Только L1: боксы по кадрам после постобработки и признаки по пикселям экрана и сейфа."""
+        self.last_fps = self.sample_rate(video)
         raw, chunk, out, low = [], [], [], []
-        # признаки по пикселям считаются сразу по пачке, чтобы не держать в памяти все кадры видео
+        # признаки по пикселям и позы считаются сразу по пачке, чтобы не держать в памяти все кадры видео
         pixels: dict[float, dict] = {}
+        poses: dict[float, dict] = {}  # t → {bbox: 33 точки} людей (POSE, каждый pose_every-й кадр)
 
         def flush():
-            preds = self.predict_frames([f for _, f in chunk])
-            for (t, frame), dets in zip(chunk, preds):
+            preds = self.predict_frames([f for _, f, _ in chunk])
+            for (t, frame, i), dets in zip(chunk, preds):
                 if self.low_conf:
                     low.extend({"t": round(t, 3), "cls": c, "bbox": [round(v, 1) for v in b], "conf": round(s, 3),
                                 "attributes": {"low": True}} for c, b, s in dets
@@ -215,9 +254,12 @@ class FrameDetector(Detector):
                 raw.append((t, dets))
                 pixels[round(t, 3)] = {tuple(round(v, 1) for v in b): pixel_attributes(frame, c, b)
                                        for c, b, _ in dets if c in ("computer", "safe")}
+                if self.pose and i % self.pose_every == 0:
+                    poses[round(t, 3)] = {tuple(round(v, 1) for v in b): lm for c, b, s in dets
+                                          if c == "person" and s >= POSE_MIN_CONF and (lm := self.pose.landmarks(frame, b))}
 
-        for t, frame in iter_frames(video, self.fps):
-            chunk.append((t, frame))
+        for i, (t, frame) in enumerate(iter_frames(video, self.last_fps)):
+            chunk.append((t, frame, i))
             if len(chunk) == self.batch:
                 flush()
                 chunk = []
@@ -226,6 +268,8 @@ class FrameDetector(Detector):
         for b in postprocess(raw):
             if b["cls"] in ("computer", "safe"):
                 b["attributes"].update(pixels.get(b["t"], {}).get(tuple(b["bbox"]), {}))
+            elif b["cls"] in ("person", "reflection") and (lm := poses.get(b["t"], {}).get(tuple(b["bbox"]))):
+                b["attributes"]["pose"] = lm
             out.append(b)
         return out + low
 
@@ -235,10 +279,16 @@ class FrameDetector(Detector):
 
         started = time.time()
         boxes = self.detect(video)
-        res = analyze(boxes, self.fps)
-        note = f"{self.weights.name}, {self.fps:g} кадр/с"
+        res = analyze(boxes, self.last_fps)
+        note = f"{self.weights.name}, {self.last_fps:.3g} кадр/с"
+        if self.over_budget:
+            note += f" (видео длиннее {FRAME_BUDGET} кадров — не каждый кадр)"
+        elif self.fps is None:
+            note += " (каждый кадр)"
         if self.views:
             note += ", виды " + " / ".join(f"{n} {w:.2f}" for n, w in self.views)
+        if self.pose:
+            note += f", поза {self.pose.kind}" + (f" каждый {self.pose_every}-й кадр" if self.pose_every > 1 else "")
         if VLM_URL:  # спорные моменты — VLM (сервис vlm); недоступна — остаются правила
             ask = Asker(video, res["zones"])
             res = with_vlm(res, ask)
@@ -283,7 +333,7 @@ class RfDetrDetector(FrameDetector):
 
 def apply_model_dir() -> str | None:
     """MODEL_DIR → DETECTOR, DETECTOR_WEIGHTS, STEP_CLASSIFIER/STEP_MODEL, DETECTOR_CONF, RFDETR_*, DETECTOR_VIEWS, TRACKER,
-    MODEL_TAG из model.json.
+    SAMPLE_FPS, MODEL_TAG из model.json.
 
     Классификатор шагов обучен на L1 этих весов, поэтому релиз без него — только правила, а не чужой steps_<детектор>.
     Каталог — по realpath: процесс закреплён на теге, даже если симлинк current переключат на ходу.
@@ -302,6 +352,20 @@ def apply_model_dir() -> str | None:
             env[var] = str(params[name])
     env["DETECTOR_VIEWS"] = json.dumps(params["views"]) if params.get("views") else ""  # ансамбль видов кадра, cv.views
     env["TRACKER"] = params.get("tracker") or "greedy"  # трекер людей L2, decision.tracking
+    rate = params.get("sample_fps", 4)
+    env["SAMPLE_FPS"] = "native" if rate in (0, "0", "native") else str(rate)
+    env["POSE"] = params.get("pose") or "off"  # позы людей MediaPipe (cv.pose): lite / full / heavy
+    env["POSE_EVERY"] = str(params.get("pose_every") or 1)
+    env.update(ECL="off", ECL_MODEL="")
+    if part := manifest.get("ecl"):
+        try:
+            path = (root / part["file"]).resolve()
+            if path.parent != root or hashlib.sha256(path.read_bytes()).hexdigest() != part["sha256"]:
+                raise ValueError("путь или SHA256 не совпадает")
+        except (OSError, KeyError, TypeError, ValueError) as e:
+            # worker допускает отсутствие первого model.json, но не повреждённый артефакт выбранного релиза.
+            raise RuntimeError(f"Некорректный ECL-артефакт релиза {manifest['tag']}: {e}") from e
+        env.update(ECL="on", ECL_MODEL=str(path))
     os.environ.update(env)
     return manifest["tag"]
 
@@ -311,4 +375,8 @@ def get_detector(kind: str | None = None) -> Detector:
     detectors = {"stub": StubDetector, "yolo": YoloDetector, "rfdetr": RfDetrDetector}
     if kind not in detectors:
         raise ValueError(f"неизвестный детектор: {kind}")
+    from decision import evidence
+
+    if evidence.enabled():
+        evidence.load()  # проверка до первой задачи, даже если видео не содержит действий
     return detectors[kind]()

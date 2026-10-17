@@ -22,3 +22,20 @@ COPY pyproject.toml uv.lock .python-version ./
 RUN uv sync --frozen --no-dev --no-install-project
 COPY src ./src
 RUN uv sync --frozen --no-dev
+
+# Позы людей MediaPipe (cv.pose, POSE=lite|full|heavy). Отдельными слоями после uv sync и apt выше: смена lock или
+# базового apt-слоя пересобирает слой с torch (несколько ГБ) на сервере; перенести в pyproject после хакатона.
+# Версии закреплены: mediapipe 1.0.1 совместим с numpy 2.5.4 и opencv 5.0 из lock; libegl1, libgles2 — его нативная
+# библиотека требует libEGL.so.1 даже на CPU. Модели Pose Landmarker (Apache-2.0), версия 1, с проверкой sha256.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends libegl1 libgles2 \
+ && rm -rf /var/lib/apt/lists/*
+RUN uv pip install --no-cache mediapipe==1.0.1
+ADD https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task /models/
+ADD https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task /models/
+ADD https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/1/pose_landmarker_heavy.task /models/
+RUN echo "59929e1d1ee95287735ddd833b19cf4ac46d29bc7afddbbf6753c459690d574a  /models/pose_landmarker_lite.task" | sha256sum -c - \
+ && echo "5134a3aad27a58b93da0088d431f366da362b44e3ccfbe3462b3827a839011b1  /models/pose_landmarker_full.task" | sha256sum -c - \
+ && echo "64437af838a65d18e5ba7a0d39b465540069bc8aae8308de3e318aad31fcbc7b  /models/pose_landmarker_heavy.task" | sha256sum -c - \
+ && chmod 644 /models/*.task
+ENV POSE_MODEL_DIR=/models

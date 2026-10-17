@@ -12,6 +12,7 @@ import csv
 import json
 import os
 import time
+from contextlib import closing
 
 from cv.detectors import DATA_DIR, apply_model_dir, get_detector
 
@@ -45,20 +46,20 @@ def main() -> None:
         rows = [r for r in csv.DictReader(f) if not r["duplicate_of"]]
     if args.videos:
         rows = [r for r in rows if r["video"] in args.videos]
-    det = get_detector(detector)
-    total = time.time()
-    for r in rows:
-        started = time.time()
-        boxes = det.detect(DATA_DIR / "videos" / f"{r['video']}.mov")
-        out = cache_path(r["sha256"], detector, cache_tag)
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps({"video": r["video"], "detector": detector, "model": tag, "weights": str(det.weights),
-                                   "fps": det.fps, "conf": det.conf, "low_conf": det.low_conf, "views": det.views,
-                                   "boxes": boxes}))
-        took = time.time() - started
-        print(f"{r['video']:>5}: {float(r['duration_sec']):6.1f} с видео → {len(boxes):5d} боксов за {took:5.1f} с",
-              flush=True)
-    print(f"всего {len(rows)} видео за {time.time() - total:.0f} с")
+    with closing(get_detector(detector)) as det:
+        total = time.time()
+        for r in rows:
+            started = time.time()
+            boxes = det.detect(DATA_DIR / "videos" / f"{r['video']}.mov")
+            out = cache_path(r["sha256"], detector, cache_tag)
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(json.dumps({"video": r["video"], "detector": detector, "model": tag, "weights": str(det.weights),
+                                       "fps": det.last_fps, "conf": det.conf, "low_conf": det.low_conf, "views": det.views,
+                                       "boxes": boxes}))
+            took = time.time() - started
+            print(f"{r['video']:>5}: {float(r['duration_sec']):6.1f} с видео → {len(boxes):5d} боксов за {took:5.1f} с",
+                  flush=True)
+        print(f"всего {len(rows)} видео за {time.time() - total:.0f} с")
 
 
 if __name__ == "__main__":

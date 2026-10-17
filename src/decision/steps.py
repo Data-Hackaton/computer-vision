@@ -23,6 +23,7 @@ MAX_LENGTH_SEC = 10.0  # max_length_sec: длинный отрезок реже�
 # Кассир «ушёл» — только если его нет дольше 3 с: клиент или стойка могут перекрыть его на секунду-две.
 # Клиент «ушёл» — если его нет дольше 2 с (трек рвётся в дверях); второй посетитель — дольше 3 с.
 LEAVE_SEAT_D = 0.3  # кассир «у места» — ближе 0,3 роста к своему месту
+TAIL_LEAVE_SEC = 0.5  # native: кассира нет в последние полсекунды; обычная выборка сохраняет прежнее сглаживание
 HOLD_SEC = {"cashier_present": 3.0, "client_present": 2.0, "visitors": 3.0, "foreign_on_desk": 3.0,
             "phone_at_head": 2.0, "bag_on_desk": 1.5, "screen_on": 1.5, "two_at_cashier": 2.0}
 
@@ -59,10 +60,14 @@ def segments(states: list[dict], fps: float) -> list[dict]:
         series[s] = debounce(v, max(1, round(HOLD_SEC.get(s, MIN_LENGTH_SEC) * fps)))
     ts = [st["t"] for st in states]
     dt = 1 / fps
-    # кассир пропал в конце ролика (ушёл, и запись кончилась) — это уход, даже если пропал меньше чем на HOLD_SEC
-    raw = smooth([st["cashier_present"] for st in states], round(SMOOTH_SEC * fps))
+    # кассир пропал в конце ролика (ушёл, и запись кончилась) — это уход, даже если пропал меньше чем на HOLD_SEC.
+    # Только native использует сырой хвост: прежняя логика при SAMPLE_FPS=4 должна остаться неизменной.
+    native = os.environ.get("SAMPLE_FPS", "4") in ("native", "0")
+    values = [st["cashier_present"] for st in states]
+    raw = values if native else smooth(values, round(SMOOTH_SEC * fps))
     tail = next((i for i in range(len(raw) - 1, -1, -1) if raw[i]), -1) + 1
-    if len(raw) - tail >= fps and tail > 0:
+    minimum = max(1, round(TAIL_LEAVE_SEC * fps)) if native else fps
+    if len(raw) - tail >= minimum and tail > 0:
         series["cashier_present"][tail:] = [0] * (len(raw) - tail)
     out: list[dict] = []
     for i, t in enumerate(ts):
@@ -176,7 +181,50 @@ def to_instances(actions: list[dict]) -> list[dict]:
     return [i for i in instances if i["actions"]]
 
 
-def analyze(boxes: list[dict], fps: float) -> dict:
+def runs(values: list[int], ts: list[float], fps: float, min_sec: float) -> list[tuple[float, float]]:
+    """Отрезки (t_start, t_end), где сглаженный сигнал истинен не короче min_sec."""
+    v = debounce(smooth([int(x) for x in values], round(SMOOTH_SEC * fps)), max(1, round(min_sec * fps)))
+    out, start = [], None
+    for i, x in enumerate(v):
+        if x and start is None:
+            start = ts[i]
+        elif not x and start is not None:
+            out.append((start, ts[i]))
+            start = None
+    if start is not None:
+        out.append((start, ts[-1] + 1 / fps))
+    return [(a, b) for a, b in out if b - a >= min_sec]
+
+
+def pose_actions(states: list[dict], actions: list[dict], fps: float) -> list[dict]:
+    """Действия из подсказок по позе кассира и клиента (decision.scene, decision.posture). Без поз подсказки всегда
+    False — список пуст, поведение прежнее.
+      _hand_hidden ≥ 1 с  → keep (кассир оставил деньги у себя, X-1): при клиенте правило L3 — violation;
+      _counting ≥ 1,5 с   → count_by_hand, если рядом нет загрузки в машинку (X-34);
+      _client_up          → person_leave client сдвигается к моменту, когда клиент встал (ранний уход).
+    Кисть в сейфе как put → safe пробовали и убрали: в чистых X-14, X-35, X-39 кассир так же тянется к сейфу
+    за сумкой и за деньгами, а в X-13 момент закладки не совпал — одни ложные."""
+    if not states or not any(st.get("_hand_hidden") or st.get("_counting") or st.get("_client_up") for st in states):
+        return []
+    ts = [st["t"] for st in states]
+    out: list[dict] = []
+    for a, b in runs([st["_hand_hidden"] for st in states], ts, fps, 1.5):
+        if not any(x["action"] == "keep" and abs(x["t"] - a) < 5 for x in out):
+            out.append({"t": round(a, 2), "t_end": round(b, 2), "action": "keep", "actor": "cashier", "object": "banknotes",
+                        "source": "pose"})
+    machine = [x["t"] for x in actions if x["action"] == "put" and x.get("target") == "cash_machine"]
+    for a, b in runs([st["_counting"] for st in states], ts, fps, 1.5):
+        if not any(abs(t - a) <= 3 for t in machine):
+            out.append({"t": round(a, 2), "t_end": round(b, 2), "action": "count_by_hand", "actor": "cashier",
+                        "object": "banknotes", "source": "pose"})
+    for a, _ in runs([st["_client_up"] for st in states], ts, fps, 0.5):
+        for x in actions:
+            if x["action"] == "person_leave" and x.get("actor") == "client" and 0 <= x["t"] - a < 4:
+                x["t"] = round(a, 2)
+    return out
+
+
+def analyze(boxes: list[dict], fps: float, *, calibrate: bool = True, collect_evidence: bool = False) -> dict:
     """Боксы L1 → треки и роли (в боксах), отрезки, действия, экземпляры.
 
     Слабые боксы людей (attributes.low, DETECTOR_LOW_CONF) только продлевают треки: продлившие остаются в boxes,
@@ -198,6 +246,7 @@ def analyze(boxes: list[dict], fps: float) -> dict:
         from decision.learned import learned_actions
 
         actions += learned_actions(boxes, fps, model_path)
+    actions += pose_actions(states, actions, fps)
     # уход кассира — с момента, когда он последний раз был у своего места (встал и пошёл), а не когда пропал из
     # кадра; но не раньше его последнего действия со столом (положил деньги и ушёл — деньги остались на столе)
     for a in actions:
@@ -206,11 +255,21 @@ def analyze(boxes: list[dict], fps: float) -> dict:
                        and st["_cashier_d"] < LEAVE_SEAT_D]
             last_desk = [b["t"] for b in actions if b.get("target") == "desk" and b["t"] < a["t"]]
             if at_seat:
+                a["t_seen"] = a["t"]  # когда пропал из кадра — для сверки с журналом (decision.evidence)
                 a["t"] = round(max([at_seat[-1]] + [t + 0.1 for t in last_desk]), 2)
     zones = {c: median_box([b["bbox"] for _, bs in frames for b in bs if b["cls"] == c])
              for c in ("table", "safe", "cash_machine")}
+    # ECL (decision.evidence): достоверность каждого действия до правил L3; выключен — действия как есть
+    from decision import evidence  # decision.evidence → decision.learned импортирует этот модуль
+
+    use_ecl = calibrate and evidence.enabled()
+    ctx = evidence.context(frames, states, fps, zones, actions, states[-1]["t"] if states else 0.0) if (
+        use_ecl or collect_evidence) else None
+    if use_ecl:
+        evidence.apply([a for a in actions if not a["action"].startswith("_")], ctx)
     return {"roles": roles, "segments": segs, "states": states, "zones": zones, "raw_actions": actions,
-            "actions": [a for a in actions if not a["action"].startswith("_")], "instances": instances_of(actions)}
+            "actions": [a for a in actions if not a["action"].startswith("_")], "instances": instances_of(actions),
+            "ecl_context": ctx}
 
 
 def with_vlm(res: dict, ask) -> dict:
