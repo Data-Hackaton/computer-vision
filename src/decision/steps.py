@@ -90,8 +90,9 @@ class RulesClassifier:
         """Что уже лежит в первом кадре — «положено» до начала видео. Кроме денег: на столе с начала ролика лежат
         бумаги и удостоверения, которые детектор путает с купюрами (ложные «деньги прошлого клиента» в X-37, X-39)."""
         t, st = seg["t_start"], seg["state"]
-        out = [act(t, "put", object=o, target=g) for s, (o, g) in self.PLACED.items()
-               if s not in ("money_in_machine", "money_on_desk") and st[s]]
+        out = [act(t, "person_enter", "client")] if st["client_present"] else []  # клиент пришёл до начала записи
+        out += [act(t, "put", object=o, target=g) for s, (o, g) in self.PLACED.items()
+                if s not in ("money_in_machine", "money_on_desk") and st[s]]
         if st["screen_on"] and st["cashier_present"]:
             out.append(act(t, "use_laptop"))
         return out

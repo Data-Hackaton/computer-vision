@@ -105,6 +105,23 @@ def test_fsm_matches_legacy_rules_on_synthetic_segments():
     assert instances_of([dict(a) for a in new]) == to_instances([dict(a) for a in legacy])
 
 
+def test_client_present_from_first_frame():
+    """Клиент у кассы с первого кадра — пришёл до записи: экземпляр — обслуживание, а не работа без посетителей."""
+    from decision.fsm import instances_of, scene_actions
+    from decision.scene import SIGNALS
+    from decision.steps import RulesClassifier
+
+    base = {s: 0 for s in SIGNALS} | {"cashier_present": 1}
+    segs = [{"t_start": 0.0, "t_end": 5.0, "state": base | {"client_present": 1, "visitors": 1, "screen_on": 1}},
+            {"t_start": 5.0, "t_end": 9.0, "state": base | {"client_present": 1, "visitors": 1, "money_on_desk": 1}},
+            {"t_start": 9.0, "t_end": 12.0, "state": base}]
+    actions = scene_actions(segs)
+    assert actions[0] == {"t": 0.0, "action": "person_enter", "actor": "client"}
+    assert [i["scenario"] for i in instances_of(actions)] == ["client_service"]
+    clf = RulesClassifier()
+    assert clf.initial(segs[0]) == scene_actions(segs[:1])
+
+
 def test_instance_machine_cases():
     from decision.fsm import instances_of
 

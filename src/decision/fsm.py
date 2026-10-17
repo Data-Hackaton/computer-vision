@@ -91,11 +91,13 @@ class SceneModel:
         return emit
 
     def initial(self, seg: dict) -> list[dict]:
-        """Что уже лежит в первом кадре — «положено» до начала видео, кроме денег (бумаги и удостоверения на столе
-        детектор путает с купюрами); экран включён при кассире — работает за компьютером."""
+        """Что уже есть в первом кадре: клиент у кассы — пришёл до начала записи (иначе обслуживание считается работой
+        без посетителей и все его шаги — «вне шаблона», X-3, X-5); положенное — «положено» до начала видео, кроме денег
+        (бумаги и удостоверения на столе детектор путает с купюрами); экран включён при кассире — работает за компьютером."""
         t, st = seg["t_start"], seg["state"]
-        out = [act(t, "put", object=o, target=g) for facet, (o, g) in PLACED.items()
-               if facet not in ("desk_money", "machine_money") and st[FACETS[facet][0]]]
+        out = [act(t, "person_enter", "client")] if st["client_present"] else []
+        out += [act(t, "put", object=o, target=g) for facet, (o, g) in PLACED.items()
+                if facet not in ("desk_money", "machine_money") and st[FACETS[facet][0]]]
         if st["screen_on"] and st["cashier_present"]:
             out.append(act(t, "use_laptop"))
         return out

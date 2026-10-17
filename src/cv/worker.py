@@ -73,7 +73,8 @@ def run_cv(task: dict) -> dict:
             e["evidence"] = []
             if e["status"] == "expected":
                 continue
-            e["message"] = describe(e, why)
+            if e["event"] != "sop_step":  # у SOP-чекера сообщение готово: «Пропущен шаг процедуры в цикле …»
+                e["message"] = describe(e, why)
             if e["status"] == "violation":
                 key = f"jobs/{job_id}/evidence/{n}.jpg"
                 _s3.put_object(Bucket=S3_BUCKET, Key=key, Body=frame_with_boxes(video, e["t_start"], det.boxes),
