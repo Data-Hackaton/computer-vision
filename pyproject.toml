@@ -7,7 +7,7 @@ authors = [
 ]
 requires-python = ">=3.12"
 dependencies = [
-    "rfdetr==1.11.2",
+    "rfdetr[loggers,train]==1.11.2",
     "supervision==0.31.0",
     "torch==2.14.1",
     "torchvision==0.29.1",
