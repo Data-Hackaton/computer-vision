@@ -107,15 +107,19 @@ async def main() -> None:
         tag = None
         print(f"cv-worker: релиза модели нет ({e.filename}) — веса по умолчанию", flush=True)
     _detector = get_detector()
-    client = await Client.connect(os.environ.get("TEMPORAL_ADDRESS", "temporal:7233"),
-                                  namespace=os.environ.get("TEMPORAL_NAMESPACE", "default"))
-    # тег модели в identity: виден в GET /api/v1/queue, по нему infra/model.sh проверяет выкатку
-    identity = f"{os.getpid()}@{socket.gethostname()} {_detector.name}:{tag or 'default'}"
-    worker = Worker(client, task_queue=CV_QUEUE, activities=[run_cv], activity_executor=ThreadPoolExecutor(1),
-                    max_concurrent_activities=1, identity=identity)
-    print(f"cv-worker: очередь {CV_QUEUE}, детектор {_detector.name}, модель {tag or 'по умолчанию'}, "
-          f"готов за {time.time() - started:.0f} с", flush=True)
-    await worker.run()
+    try:
+        client = await Client.connect(os.environ.get("TEMPORAL_ADDRESS", "temporal:7233"),
+                                      namespace=os.environ.get("TEMPORAL_NAMESPACE", "default"))
+        # тег модели в identity: виден в GET /api/v1/queue, по нему infra/model.sh проверяет выкатку
+        identity = f"{os.getpid()}@{socket.gethostname()} {_detector.name}:{tag or 'default'}"
+        worker = Worker(client, task_queue=CV_QUEUE, activities=[run_cv], activity_executor=ThreadPoolExecutor(1),
+                        max_concurrent_activities=1, identity=identity)
+        print(f"cv-worker: очередь {CV_QUEUE}, детектор {_detector.name}, модель {tag or 'по умолчанию'}, "
+              f"готов за {time.time() - started:.0f} с", flush=True)
+        await worker.run()
+
+    finally:
+        _detector.close()
 
 
 if __name__ == "__main__":

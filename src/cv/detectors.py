@@ -58,6 +58,9 @@ class Detection:
 class Detector:
     name = "base"
 
+    def close(self) -> None:
+        """Освободить native ресурсы до завершения executor/runtime."""
+
     def run(self, video: Path, sha256: str) -> Detection:
         raise NotImplementedError
 
@@ -189,7 +192,15 @@ class FrameDetector(Detector):
 
         self.pose = PoseEstimator.from_env()  # None — без поз (POSE=off или нет mediapipe)
         self.pose_every = max(1, int(os.environ.get("POSE_EVERY", "1")))
-        self.load()
+        try:
+            self.load()
+        except Exception:
+            self.close()
+            raise
+
+    def close(self) -> None:
+        if self.pose:
+            self.pose.close()
 
     def load(self) -> None:
         raise NotImplementedError
