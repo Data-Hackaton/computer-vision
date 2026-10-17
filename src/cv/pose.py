@@ -10,7 +10,7 @@
 """
 
 import argparse
-import atexit
+from contextlib import closing
 import csv
 import json
 import logging
@@ -46,14 +46,12 @@ class PoseEstimator:
                                             running_mode=vision.RunningMode.IMAGE, num_poses=1,
                                             min_pose_detection_confidence=0.3, min_pose_presence_confidence=0.3)
         self.landmarker = vision.PoseLandmarker.create_from_options(opts)
-        atexit.register(self.close)
 
     def close(self) -> None:
         """Закрываем native dispatcher до разрушения Python-модулей, в том числе в пакетном инференсе."""
         if self.landmarker is not None:
             self.landmarker.close()
             self.landmarker = None
-        atexit.unregister(self.close)
 
     @classmethod
     def from_env(cls) -> "PoseEstimator | None":
@@ -168,15 +166,15 @@ def main() -> None:
     args = ap.parse_args()
     with (DATA_DIR / "labels.csv").open() as f:
         sha = {r["video"]: r["sha256"] for r in csv.DictReader(f) if not r["duplicate_of"]}
-    model = PoseEstimator(Path(MODEL))
-    summary = {}
-    for name in args.videos:
-        summary[name] = run_video(model, name, sha[name])
-        print(name, summary[name], flush=True)
-    path = DATA_DIR / "runs" / "pose" / f"summary_{model.kind}.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(summary, ensure_ascii=False, indent=1))
-    print(f"→ {path}")
+    with closing(PoseEstimator(Path(MODEL))) as model:
+        summary = {}
+        for name in args.videos:
+            summary[name] = run_video(model, name, sha[name])
+            print(name, summary[name], flush=True)
+        path = DATA_DIR / "runs" / "pose" / f"summary_{model.kind}.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(summary, ensure_ascii=False, indent=1))
+        print(f"→ {path}")
 
 
 if __name__ == "__main__":
