@@ -10,6 +10,7 @@
 """
 
 import argparse
+import atexit
 import csv
 import json
 import logging
@@ -45,6 +46,14 @@ class PoseEstimator:
                                             running_mode=vision.RunningMode.IMAGE, num_poses=1,
                                             min_pose_detection_confidence=0.3, min_pose_presence_confidence=0.3)
         self.landmarker = vision.PoseLandmarker.create_from_options(opts)
+        atexit.register(self.close)
+
+    def close(self) -> None:
+        """Закрываем native dispatcher до разрушения Python-модулей, в том числе в пакетном инференсе."""
+        if self.landmarker is not None:
+            self.landmarker.close()
+            self.landmarker = None
+        atexit.unregister(self.close)
 
     @classmethod
     def from_env(cls) -> "PoseEstimator | None":
