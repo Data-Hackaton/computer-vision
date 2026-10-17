@@ -103,6 +103,34 @@ def test_weak_boxes_extend_track_and_unmatched_are_dropped():
     assert not any(b["attributes"].get("low") for b in boxes)
 
 
+def test_model_dir_sets_tracker():
+    import json
+    import tempfile
+    from pathlib import Path
+
+    from cv.detectors import apply_model_dir
+
+    keys = ("MODEL_DIR", "DETECTOR", "DETECTOR_WEIGHTS", "MODEL_TAG", "STEP_CLASSIFIER", "STEP_MODEL", "DETECTOR_CONF",
+            "DETECTOR_VIEWS", "TRACKER")
+    old = {k: os.environ.pop(k, None) for k in keys}
+    try:
+        with tempfile.TemporaryDirectory() as root:
+            manifest = {"tag": "model-yolo-test", "detector": "yolo", "weights": {"file": "best.pt"}, "steps": None,
+                        "params": {"conf": 0.35, "tracker": "bytetrack"}}
+            (Path(root) / "model.json").write_text(json.dumps(manifest))
+            os.environ["MODEL_DIR"] = root
+            apply_model_dir()
+            assert os.environ["TRACKER"] == "bytetrack"
+            # релиз без трекера возвращает жадный
+            del manifest["params"]["tracker"]
+            (Path(root) / "model.json").write_text(json.dumps(manifest))
+            apply_model_dir()
+            assert os.environ["TRACKER"] == "greedy"
+    finally:
+        for k, v in old.items():
+            os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
+
+
 def test_botsort_runs_without_frames():
     boxes = [box(i / FPS, CASHIER) for i in range(20)] + [box(i / FPS, CLIENT) for i in range(20)]
     run(boxes, "botsort")

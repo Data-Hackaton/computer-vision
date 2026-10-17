@@ -282,7 +282,8 @@ class RfDetrDetector(FrameDetector):
 
 
 def apply_model_dir() -> str | None:
-    """MODEL_DIR → DETECTOR, DETECTOR_WEIGHTS, STEP_CLASSIFIER/STEP_MODEL, DETECTOR_CONF, RFDETR_*, MODEL_TAG из model.json.
+    """MODEL_DIR → DETECTOR, DETECTOR_WEIGHTS, STEP_CLASSIFIER/STEP_MODEL, DETECTOR_CONF, RFDETR_*, DETECTOR_VIEWS, TRACKER,
+    MODEL_TAG из model.json.
 
     Классификатор шагов обучен на L1 этих весов, поэтому релиз без него — только правила, а не чужой steps_<детектор>.
     Каталог — по realpath: процесс закреплён на теге, даже если симлинк current переключат на ходу.
@@ -300,6 +301,7 @@ def apply_model_dir() -> str | None:
         if params.get(name) is not None:
             env[var] = str(params[name])
     env["DETECTOR_VIEWS"] = json.dumps(params["views"]) if params.get("views") else ""  # ансамбль видов кадра, cv.views
+    env["TRACKER"] = params.get("tracker") or "greedy"  # трекер людей L2, decision.tracking
     os.environ.update(env)
     return manifest["tag"]
 

@@ -9,6 +9,7 @@
 #   --conf <порог>    DETECTOR_CONF (по умолчанию 0.35); --weights <файл> — веса не по умолчанию для прогона
 #   --views '<json>'  ансамбль видов кадра (cv.views), в params.views:
 #                     '[{"name":"orig","weight":0.76},{"name":"unsharp","weight":0.12},{"name":"clahe","weight":0.12}]'
+#   --tracker <имя>   трекер людей L2 (decision.tracking), в params.tracker: greedy (по умолчанию), bytetrack, botsort
 #   --tag <тег>       свой тег вместо model-<детектор>-<прогон>-<дата>
 #   --draft           черновик релиза: на сервер не выкатывается, пока его не опубликуют
 #   --out <каталог>   только собрать релиз (model.json и файлы), ничего не публиковать
@@ -16,16 +17,17 @@
 set -euo pipefail
 repo=$(cd "$(dirname "$0")/.." && pwd)
 
-usage() { sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
+usage() { sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
 [ $# -ge 2 ] || usage
 detector=$1 run_dir=${2%/}
 shift 2
-steps='' conf=0.35 views='' weights='' tag='' draft='' out='' build_only=''
+steps='' conf=0.35 views='' tracker='' weights='' tag='' draft='' out='' build_only=''
 while [ $# -gt 0 ]; do
   case $1 in
     --steps) steps=$2; shift 2 ;;
     --conf) conf=$2; shift 2 ;;
     --views) views=$2; shift 2 ;;
+    --tracker) tracker=$2; shift 2 ;;
     --weights) weights=$2; shift 2 ;;
     --tag) tag=$2; shift 2 ;;
     --draft) draft=--draft; shift ;;
@@ -41,6 +43,7 @@ case $detector in
 esac
 [ -f "$weights" ] || { echo "нет весов $weights"; exit 1; }
 [ -z "$steps" ] || [ -f "$steps" ] || { echo "нет классификатора шагов $steps"; exit 1; }
+case ${tracker:-greedy} in greedy|bytetrack|botsort) ;; *) echo "трекер: greedy, bytetrack или botsort"; exit 1 ;; esac
 run=$(basename "$run_dir")
 tag=${tag:-model-$detector-$run-$(date +%Y%m%d)}
 [[ $tag =~ ^model-[A-Za-z0-9._-]+$ ]] || { echo "тег должен быть вида model-…: $tag"; exit 1; }
@@ -54,12 +57,12 @@ cp "$weights" "$out/"
 [ -z "$steps" ] || cp "$steps" "$out/steps.joblib"
 
 # Манифест: что читает cv.detectors.apply_model_dir, плюс происхождение — коммиты кода и данных, метрики обучения
-python3 - "$out" "$tag" "$detector" "$(basename "$weights")" "${steps:+steps.joblib}" "$conf" "$views" "$run_dir" \
+python3 - "$out" "$tag" "$detector" "$(basename "$weights")" "${steps:+steps.joblib}" "$conf" "$views" "$tracker" "$run_dir" \
   "$(git -C "$repo" rev-parse HEAD)" "$(git -C "$repo/../data_prepare" rev-parse HEAD 2>/dev/null || true)" <<'EOF'
 import csv, hashlib, json, sys, time
 from pathlib import Path
 
-out, tag, detector, weights, steps, conf, views, run_dir, code, data = sys.argv[1:]
+out, tag, detector, weights, steps, conf, views, tracker, run_dir, code, data = sys.argv[1:]
 out, run_dir = Path(out), Path(run_dir)
 
 
@@ -92,6 +95,8 @@ if views:  # проверка, как в cv.views.parse_views: известны�
     params["views"] = [{"name": v["name"], "weight": float(v["weight"])} for v in json.loads(views)]
     assert {v["name"] for v in params["views"]} <= {"orig", "unsharp", "clahe"}, views
     assert sum(v["weight"] for v in params["views"]) > 0, views
+if tracker:
+    params["tracker"] = tracker
 manifest = {"tag": tag, "detector": detector, "run": run_dir.name,
             "weights": {"file": weights, "sha256": sha256(weights)},
             "steps": {"file": steps, "sha256": sha256(steps)} if steps else None,
@@ -102,7 +107,7 @@ print(json.dumps(manifest, ensure_ascii=False, indent=1))
 EOF
 
 [ -z "$build_only" ] || { echo "собрано в $out, не публикую"; exit 0; }
-notes="Модель $detector, прогон $run, порог $conf${views:+, виды кадра $views}$([ -n "$steps" ] && echo ", с классификатором шагов" || echo ", L2 только правила").
+notes="Модель $detector, прогон $run, порог $conf${views:+, виды кадра $views}${tracker:+, трекер $tracker}$([ -n "$steps" ] && echo ", с классификатором шагов" || echo ", L2 только правила").
 Выкатка на k3s-lab — workflow model-deploy (оценка, сравнение с текущей, откат при сбое)."
 gh release create "$tag" -R Data-Hackaton/computer-vision --target main --title "$tag" --notes "$notes" $draft \
   "$out"/*
