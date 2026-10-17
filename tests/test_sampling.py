@@ -101,6 +101,19 @@ def test_model_dir_sets_sample_fps():
         env(**old)
 
 
+def test_short_cashier_tail_keeps_legacy_sampling_behavior():
+    from decision.steps import SIGNALS, segments
+
+    states = [{**dict.fromkeys(SIGNALS, 0), "t": i / 4, "cashier_present": int(i < 40)} for i in range(42)]
+    old = env(SAMPLE_FPS="4")
+    try:
+        assert segments(states, 4)[-1]["state"]["cashier_present"] == 1
+        env(SAMPLE_FPS="native")
+        assert segments(states, 4)[-1]["state"]["cashier_present"] == 0
+    finally:
+        env(**old)
+
+
 if __name__ == "__main__":
     tests = [f for name, f in sorted(globals().items()) if name.startswith("test_")]
     for f in tests:
