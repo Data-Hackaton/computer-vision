@@ -83,6 +83,41 @@ def test_sop_checker_missing_count_on_machine():
     assert [(f["kind"], f["step"]["target"], f["cycle"]) for f in found] == [("missing", "cash_machine", 1)]
 
 
+def test_fsm_matches_legacy_rules_on_synthetic_segments():
+    # все фасеты сцены по очереди включаются и выключаются; автоматы дают то же, что прежние правила
+    from decision.fsm import instances_of, scene_actions
+    from decision.scene import SIGNALS
+    from decision.steps import RulesClassifier, to_instances
+
+    base = {s: 0 for s in SIGNALS} | {"cashier_present": 1}
+    seq = [{}, {"client_present": 1, "visitors": 1}, {"client_present": 1, "visitors": 2},
+           {"client_present": 1, "visitors": 1, "money_on_desk": 1, "bundles_at_cashier": 1},
+           {"client_present": 1, "visitors": 1, "bundles_at_cashier": 2, "money_in_machine": 1, "screen_on": 1},
+           {"client_present": 1, "visitors": 1, "phone_at_head": 1, "two_at_cashier": 1},
+           {"foreign_on_desk": 1, "bag_on_desk": 1}, {"cashier_present": 0, "bag_on_desk": 1}, {"cashier_present": 1}]
+    segs = [{"t_start": float(i), "t_end": i + 1.0, "state": base | d} for i, d in enumerate(seq)]
+    clf = RulesClassifier()
+    legacy = clf.initial(segs[0])
+    for p, q in zip(segs, segs[1:]):
+        legacy += clf.classify(p, q)
+    new = scene_actions(segs)
+    assert new == legacy and {a["action"] for a in new} >= {"person_enter", "split_bundle", "phone_call", "_cashier_back"}
+    assert instances_of([dict(a) for a in new]) == to_instances([dict(a) for a in legacy])
+
+
+def test_instance_machine_cases():
+    from decision.fsm import instances_of
+
+    a = lambda t, action, actor="cashier": {"t": t, "action": action, "actor": actor}
+    got = instances_of([a(0, "use_laptop"), a(1, "person_leave"), a(5, "_cashier_back"), a(6, "person_enter", "client"),
+                        a(7, "person_leave"), a(8, "person_leave", "client"), a(9, "person_leave")])
+    # работа без клиента → уход (переименование), возврат, клиент (кассир ушёл при клиенте — часть обслуживания), уход
+    assert [(i["scenario"], [x["action"] for x in i["actions"]]) for i in got] == [
+        ("leave_workplace", ["use_laptop", "person_leave"]),
+        ("client_service", ["person_enter", "person_leave", "person_leave"]),
+        ("leave_workplace", ["person_leave"])]
+
+
 if __name__ == "__main__":
     tests = [f for name, f in sorted(globals().items()) if name.startswith("test_")]
     for f in tests:

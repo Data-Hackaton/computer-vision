@@ -13,6 +13,7 @@ import statistics
 from pathlib import Path
 
 from cv.geometry import median_box
+from decision.fsm import instances_of, scene_actions
 from decision.scene import SIGNALS, assign_roles, frames_of, scene_states, track_people
 
 SMOOTH_SEC = 1.0  # threshold: окно сглаживания большинством
@@ -78,7 +79,8 @@ def act(t: float, action: str, actor: str = "cashier", **kw) -> dict:
 
 
 class RulesClassifier:
-    """Переход между отрезками → действия журнала. Аналог шага VLM «отрезок → номер шага»."""
+    """Переход между отрезками → действия журнала. Аналог шага VLM «отрезок → номер шага».
+    В работе — автоматы decision.fsm (тот же результат); этот класс и to_instances — эталон для сверки."""
 
     # сигнал «предмет лежит» → (объект, куда)
     PLACED = {"money_on_desk": ("banknotes", "desk"), "money_in_machine": ("banknotes", "cash_machine"),
@@ -180,10 +182,8 @@ def analyze(boxes: list[dict], fps: float) -> dict:
     roles, seat = assign_roles(frames, fps)
     states = scene_states(frames, roles, seat)
     segs = segments(states, fps)
-    clf = get_classifier()
-    actions = clf.initial(segs[0]) if segs else []
-    for prev, cur in zip(segs, segs[1:]):
-        actions += clf.classify(prev, cur)
+    get_classifier()  # проверка STEP_CLASSIFIER
+    actions = scene_actions(segs)  # автоматы сцены (decision.fsm); RulesClassifier — эталон для сверки
     if (model_path := step_model()) is not None:
         from decision.learned import learned_actions
 
@@ -200,7 +200,7 @@ def analyze(boxes: list[dict], fps: float) -> dict:
     zones = {c: median_box([b["bbox"] for _, bs in frames for b in bs if b["cls"] == c])
              for c in ("table", "safe", "cash_machine")}
     return {"roles": roles, "segments": segs, "states": states, "zones": zones, "raw_actions": actions,
-            "actions": [a for a in actions if not a["action"].startswith("_")], "instances": to_instances(actions)}
+            "actions": [a for a in actions if not a["action"].startswith("_")], "instances": instances_of(actions)}
 
 
 def with_vlm(res: dict, ask) -> dict:
@@ -209,7 +209,7 @@ def with_vlm(res: dict, ask) -> dict:
 
     raw = refine(res, ask)
     return {**res, "raw_actions": raw, "actions": [a for a in raw if not a["action"].startswith("_")],
-            "instances": to_instances(raw)}
+            "instances": instances_of(raw)}
 
 
 def build_journal(boxes: list[dict], fps: float) -> list[dict]:

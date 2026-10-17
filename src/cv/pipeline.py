@@ -1,5 +1,5 @@
 """Видео → события со статусами → кадры-доказательства. Движок сверки с процедурой — data_prepare (тот же,
-что проверяет эталон): check_instance / check_video + sop_events.build_events и reference/scenarios.yaml."""
+что проверяет эталон): автоматы процедур sop_fsm + sop_events.build_events и reference/scenarios.yaml."""
 
 import io
 import subprocess
@@ -9,7 +9,7 @@ import yaml
 from PIL import Image, ImageDraw
 
 from cv.detectors import REFERENCE_DIR, Detection
-from data_prepare.reference_actions import check_instance, check_video
+from data_prepare.sop_fsm import check_instance_fsm, check_video_fsm
 from data_prepare.sop_events import build_events
 
 ACTOR_RU = {"cashier": "Кассир", "client": "Клиент", "collector": "Инкассатор", "visitor": "Второй посетитель"}
@@ -43,11 +43,11 @@ def build_video_events(det: Detection, spec: dict, video_name: str = "video") ->
         actions = sorted(inst["actions"], key=lambda a: a["t"])
         instance_actions.append(actions)
         first = len(hits)
-        steps = check_instance(f"{video_name}#{idx}", scenarios[name], actions, [], [], [], hits, inst.get("partial", False))
+        steps = check_instance_fsm(f"{video_name}#{idx}", scenarios[name], actions, [], [], [], hits, inst.get("partial", False))
         for h in hits[first:]:
             h.update(instance=idx, scenario=name)
         instances.append((name, actions, steps))
-    check_video(video_name, instance_actions, spec.get("video_invariants", []), [], hits)
+    check_video_fsm(video_name, instance_actions, spec.get("video_invariants", []), [], hits)
     events = build_events(video_name, instances, hits)
     return events + sequence_events(instance_actions, spec)
 
