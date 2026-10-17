@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.env
+*.mov
+*.mp4
+data/
+weights/
+runs/
