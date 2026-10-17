@@ -179,6 +179,55 @@ def to_instances(actions: list[dict]) -> list[dict]:
     return [i for i in instances if i["actions"]]
 
 
+def runs(values: list[int], ts: list[float], fps: float, min_sec: float) -> list[tuple[float, float]]:
+    """Отрезки (t_start, t_end), где сглаженный сигнал истинен не короче min_sec."""
+    v = debounce(smooth([int(x) for x in values], round(SMOOTH_SEC * fps)), max(1, round(min_sec * fps)))
+    out, start = [], None
+    for i, x in enumerate(v):
+        if x and start is None:
+            start = ts[i]
+        elif not x and start is not None:
+            out.append((start, ts[i]))
+            start = None
+    if start is not None:
+        out.append((start, ts[-1] + 1 / fps))
+    return [(a, b) for a, b in out if b - a >= min_sec]
+
+
+def pose_actions(states: list[dict], actions: list[dict], fps: float) -> list[dict]:
+    """Действия из подсказок по позе кассира и клиента (decision.scene, decision.posture). Без поз подсказки всегда
+    False — список пуст, поведение прежнее.
+      _hand_hidden ≥ 1 с  → keep (кассир оставил деньги у себя, X-1): при клиенте правило L3 — violation;
+      _counting ≥ 1,5 с   → count_by_hand, если рядом нет загрузки в машинку (X-34);
+      _reach_safe ≥ 0,5 с → put banknotes → safe, не чаще раза в 10 с (X-13 с правилом «без машинки — в сейф»);
+      _client_up          → person_leave client сдвигается к моменту, когда клиент встал (ранний уход)."""
+    if not states or not any(st.get("_hand_hidden") or st.get("_counting") or st.get("_reach_safe")
+                             or st.get("_client_up") for st in states):
+        return []
+    ts = [st["t"] for st in states]
+    out: list[dict] = []
+    for a, b in runs([st["_hand_hidden"] for st in states], ts, fps, 1.0):
+        if not any(x["action"] == "keep" and abs(x["t"] - a) < 5 for x in out):
+            out.append({"t": round(a, 2), "t_end": round(b, 2), "action": "keep", "actor": "cashier", "object": "banknotes",
+                        "source": "pose"})
+    machine = [x["t"] for x in actions if x["action"] == "put" and x.get("target") == "cash_machine"]
+    for a, b in runs([st["_counting"] for st in states], ts, fps, 1.5):
+        if not any(abs(t - a) <= 3 for t in machine):
+            out.append({"t": round(a, 2), "t_end": round(b, 2), "action": "count_by_hand", "actor": "cashier",
+                        "object": "banknotes", "source": "pose"})
+    last_safe = -1e9
+    for a, b in runs([st["_reach_safe"] for st in states], ts, fps, 0.5):
+        if a - last_safe >= 10:
+            out.append({"t": round(a, 2), "t_end": round(b, 2), "action": "put", "actor": "cashier", "object": "banknotes",
+                        "target": "safe", "source": "pose"})
+            last_safe = a
+    for a, _ in runs([st["_client_up"] for st in states], ts, fps, 0.5):
+        for x in actions:
+            if x["action"] == "person_leave" and x.get("actor") == "client" and 0 <= x["t"] - a < 4:
+                x["t"] = round(a, 2)
+    return out
+
+
 def analyze(boxes: list[dict], fps: float) -> dict:
     """Боксы L1 → треки и роли (в боксах), отрезки, действия, экземпляры.
 
@@ -201,6 +250,7 @@ def analyze(boxes: list[dict], fps: float) -> dict:
         from decision.learned import learned_actions
 
         actions += learned_actions(boxes, fps, model_path)
+    actions += pose_actions(states, actions, fps)
     # уход кассира — с момента, когда он последний раз был у своего места (встал и пошёл), а не когда пропал из
     # кадра; но не раньше его последнего действия со столом (положил деньги и ушёл — деньги остались на столе)
     for a in actions:

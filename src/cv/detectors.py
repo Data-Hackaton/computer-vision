@@ -11,7 +11,8 @@ DETECTOR_CONF — порог уверенности, DETECTOR_DEVICE — cpu и�
 MODEL_DIR — каталог релиза модели (model.json, веса, классификатор шагов — scripts/publish-model.sh): задаёт всё это
 поверх окружения, см. apply_model_dir. DETECTOR_VIEWS — ансамбль видов кадра (исходный, резкость, контраст) с весами,
 см. cv.views; пусто — один проход. DETECTOR_LOW_CONF — ниже DETECTOR_CONF: слабые боксы людей идут в L1 с
-attributes.low для второго прохода ByteTrack (decision.tracking); пусто — их нет.
+attributes.low для второго прохода ByteTrack (decision.tracking); пусто — их нет. POSE — позы людей MediaPipe
+(lite / full / heavy, см. cv.pose) в attributes.pose боксов person на каждом POSE_EVERY-м кадре; off — без поз.
 """
 
 import csv
@@ -34,6 +35,7 @@ CLASS_NAMES = ["person", "reflection", "hand", "banknotes", "id_card", "cash_mac
 # Сколько боксов класса на кадре максимум (как в предразметке)
 MAX_PER_FRAME = {"person": 6, "reflection": 6, "hand": 8, "banknotes": 8, "id_card": 2, "cash_machine": 1, "safe": 1,
                  "door": 1, "phone": 2, "bag": 3, "table": 1, "foreign_object": 4, "computer": 2, "ignore_zone": 1}
+POSE_MIN_CONF = 0.5  # поза считается у боксов person не слабее этого
 # Кадров на анализ одного видео не больше: 5 минут при 30 кадр/с — длиннее любого видео датасета; больше на CPU
 # не уложится в лимит задачи жюри
 FRAME_BUDGET = int(os.environ.get("FRAME_BUDGET", "9000"))
@@ -183,6 +185,10 @@ class FrameDetector(Detector):
 
         self.views = parse_views(os.environ.get("DETECTOR_VIEWS"))
         self.low_conf = float(os.environ["DETECTOR_LOW_CONF"]) if os.environ.get("DETECTOR_LOW_CONF") else None
+        from cv.pose import PoseEstimator  # cv.pose импортирует этот модуль
+
+        self.pose = PoseEstimator.from_env()  # None — без поз (POSE=off или нет mediapipe)
+        self.pose_every = max(1, int(os.environ.get("POSE_EVERY", "1")))
         self.load()
 
     def load(self) -> None:
@@ -221,12 +227,13 @@ class FrameDetector(Detector):
         """Только L1: боксы по кадрам после постобработки и признаки по пикселям экрана и сейфа."""
         self.last_fps = self.sample_rate(video)
         raw, chunk, out, low = [], [], [], []
-        # признаки по пикселям считаются сразу по пачке, чтобы не держать в памяти все кадры видео
+        # признаки по пикселям и позы считаются сразу по пачке, чтобы не держать в памяти все кадры видео
         pixels: dict[float, dict] = {}
+        poses: dict[float, dict] = {}  # t → {bbox: 33 точки} людей (POSE, каждый pose_every-й кадр)
 
         def flush():
-            preds = self.predict_frames([f for _, f in chunk])
-            for (t, frame), dets in zip(chunk, preds):
+            preds = self.predict_frames([f for _, f, _ in chunk])
+            for (t, frame, i), dets in zip(chunk, preds):
                 if self.low_conf:
                     low.extend({"t": round(t, 3), "cls": c, "bbox": [round(v, 1) for v in b], "conf": round(s, 3),
                                 "attributes": {"low": True}} for c, b, s in dets
@@ -235,9 +242,12 @@ class FrameDetector(Detector):
                 raw.append((t, dets))
                 pixels[round(t, 3)] = {tuple(round(v, 1) for v in b): pixel_attributes(frame, c, b)
                                        for c, b, _ in dets if c in ("computer", "safe")}
+                if self.pose and i % self.pose_every == 0:
+                    poses[round(t, 3)] = {tuple(round(v, 1) for v in b): lm for c, b, s in dets
+                                          if c == "person" and s >= POSE_MIN_CONF and (lm := self.pose.landmarks(frame, b))}
 
-        for t, frame in iter_frames(video, self.last_fps):
-            chunk.append((t, frame))
+        for i, (t, frame) in enumerate(iter_frames(video, self.last_fps)):
+            chunk.append((t, frame, i))
             if len(chunk) == self.batch:
                 flush()
                 chunk = []
@@ -246,6 +256,8 @@ class FrameDetector(Detector):
         for b in postprocess(raw):
             if b["cls"] in ("computer", "safe"):
                 b["attributes"].update(pixels.get(b["t"], {}).get(tuple(b["bbox"]), {}))
+            elif b["cls"] in ("person", "reflection") and (lm := poses.get(b["t"], {}).get(tuple(b["bbox"]))):
+                b["attributes"]["pose"] = lm
             out.append(b)
         return out + low
 
@@ -263,6 +275,8 @@ class FrameDetector(Detector):
             note += " (каждый кадр)"
         if self.views:
             note += ", виды " + " / ".join(f"{n} {w:.2f}" for n, w in self.views)
+        if self.pose:
+            note += f", поза {self.pose.kind}" + (f" каждый {self.pose_every}-й кадр" if self.pose_every > 1 else "")
         if VLM_URL:  # спорные моменты — VLM (сервис vlm); недоступна — остаются правила
             ask = Asker(video, res["zones"])
             res = with_vlm(res, ask)
@@ -327,6 +341,8 @@ def apply_model_dir() -> str | None:
     env["DETECTOR_VIEWS"] = json.dumps(params["views"]) if params.get("views") else ""  # ансамбль видов кадра, cv.views
     env["TRACKER"] = params.get("tracker") or "greedy"  # трекер людей L2, decision.tracking
     env["SAMPLE_FPS"] = str(params.get("sample_fps") or 4)  # native — каждый кадр
+    env["POSE"] = params.get("pose") or "off"  # позы людей MediaPipe (cv.pose): lite / full / heavy
+    env["POSE_EVERY"] = str(params.get("pose_every") or 1)
     os.environ.update(env)
     return manifest["tag"]
 
