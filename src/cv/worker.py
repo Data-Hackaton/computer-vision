@@ -8,6 +8,7 @@ run_cv(task) — task от активности prepare бэкенда: {job_id,
 import asyncio
 import json
 import os
+import socket
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -20,7 +21,7 @@ from temporalio import activity
 from temporalio.client import Client
 from temporalio.worker import Worker
 
-from cv.detectors import get_detector
+from cv.detectors import apply_model_dir, get_detector
 from cv.pipeline import build_video_events, describe, evidence_times, frame_with_boxes, load_spec, why_by_title
 
 S3_BUCKET = os.environ.get("S3_BUCKET", "datathon")
@@ -87,7 +88,7 @@ def run_cv(task: dict) -> dict:
     put_json(f"jobs/{job_id}/boxes.json", det.boxes)
     verdict = "violation" if any(e["status"] == "violation" for e in events) else "no_violation"
     activity.logger.info("job %s: %s, событий %d, боксов %d (%s)", job_id, verdict, len(events), len(det.boxes), det.note)
-    return {"job_id": job_id, "verdict": verdict, "detector": det.detector,
+    return {"job_id": job_id, "verdict": verdict, "detector": det.detector, "model": os.environ.get("MODEL_TAG"),
             "events_key": f"jobs/{job_id}/events.json", "boxes_key": f"jobs/{job_id}/boxes.json"}
 
 
@@ -100,12 +101,19 @@ async def main() -> None:
         torch.set_num_threads(int(threads))
     # модель — при старте, а не на первой задаче: первая задача жюри не ждёт загрузки весов
     started = time.time()
+    try:
+        tag = apply_model_dir()
+    except FileNotFoundError as e:  # MODEL_DIR=…/current до первого релиза: анализ важнее, веса по умолчанию
+        tag = None
+        print(f"cv-worker: релиза модели нет ({e.filename}) — веса по умолчанию", flush=True)
     _detector = get_detector()
     client = await Client.connect(os.environ.get("TEMPORAL_ADDRESS", "temporal:7233"),
                                   namespace=os.environ.get("TEMPORAL_NAMESPACE", "default"))
+    # тег модели в identity: виден в GET /api/v1/queue, по нему infra/model.sh проверяет выкатку
+    identity = f"{os.getpid()}@{socket.gethostname()} {_detector.name}:{tag or 'default'}"
     worker = Worker(client, task_queue=CV_QUEUE, activities=[run_cv], activity_executor=ThreadPoolExecutor(1),
-                    max_concurrent_activities=1)
-    print(f"cv-worker: очередь {CV_QUEUE}, детектор {os.environ.get('DETECTOR', 'stub')}, "
+                    max_concurrent_activities=1, identity=identity)
+    print(f"cv-worker: очередь {CV_QUEUE}, детектор {_detector.name}, модель {tag or 'по умолчанию'}, "
           f"готов за {time.time() - started:.0f} с", flush=True)
     await worker.run()
 

@@ -6,6 +6,7 @@
   клиент — остальные треки людей дольше секунды (отражения уже отсеяны в L1).
 """
 
+import os
 import statistics
 from collections import defaultdict
 
@@ -32,10 +33,18 @@ def frames_of(boxes: list[dict]) -> list[tuple[float, list[dict]]]:
     return sorted(by_t.items())
 
 
-def track_people(frames: list[tuple[float, list[dict]]], fps: float, lost_sec: float = 3.0) -> None:
+def track_people(frames: list[tuple[float, list[dict]]], fps: float, lost_sec: float = 3.0,
+                 low: list[dict] | None = None) -> None:
     """Трекинг людей: жадное сопоставление с живыми треками по IoU, а при слабом IoU — по близости центров
     (человек в комнате движется плавно); трек живёт lost_sec после последнего бокса. track_id пишется в боксы.
-    В кадре 1–3 человека — ByteTrack не нужен (в supervision 0.31 его уже нет, у Ultralytics — AGPL)."""
+    TRACKER=bytetrack|botsort — трекеры Ultralytics (decision.tracking), они же продлевают треки слабыми боксами low;
+    жадный трекер слабые боксы не берёт."""
+    if (kind := os.environ.get("TRACKER", "greedy")) != "greedy":
+        from decision.tracking import TRACKERS, track_people_ultra
+
+        if kind not in TRACKERS:
+            raise ValueError(f"TRACKER={kind}: greedy или {' / '.join(TRACKERS)}")
+        return track_people_ultra(frames, fps, kind, lost_sec, low)
     tracks: dict[int, tuple[float, list[float]]] = {}  # id → (когда видели, последний бокс)
     next_id = 1
     for t, boxes in frames:

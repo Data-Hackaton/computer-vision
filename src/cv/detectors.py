@@ -7,6 +7,10 @@
   rfdetr  — RF-DETR (Apache-2.0).
 DETECTOR_WEIGHTS — веса (по умолчанию лучший прогон в data/runs), SAMPLE_FPS — кадров в секунду на анализ,
 DETECTOR_CONF — порог уверенности, DETECTOR_DEVICE — cpu или номер GPU (по умолчанию GPU, если есть). Интерфейс Detection общий: worker и бэкенд не зависят от выбора.
+MODEL_DIR — каталог релиза модели (model.json, веса, классификатор шагов — scripts/publish-model.sh): задаёт всё это
+поверх окружения, см. apply_model_dir. DETECTOR_VIEWS — ансамбль видов кадра (исходный, резкость, контраст) с весами,
+см. cv.views; пусто — один проход. DETECTOR_LOW_CONF — ниже DETECTOR_CONF: слабые боксы людей идут в L1 с
+attributes.low для второго прохода ByteTrack (decision.tracking); пусто — их нет.
 """
 
 import csv
@@ -168,24 +172,46 @@ class FrameDetector(Detector):
         self.conf = float(os.environ.get("DETECTOR_CONF", "0.35"))
         self.fps = float(os.environ.get("SAMPLE_FPS", "4"))
         self.device = os.environ.get("DETECTOR_DEVICE") or None
+        from cv.views import parse_views  # cv.views → cv.channels импортирует этот модуль
+
+        self.views = parse_views(os.environ.get("DETECTOR_VIEWS"))
+        self.low_conf = float(os.environ["DETECTOR_LOW_CONF"]) if os.environ.get("DETECTOR_LOW_CONF") else None
         self.load()
 
     def load(self) -> None:
         raise NotImplementedError
 
-    def predict(self, frames: list) -> list[list[tuple[str, list[float], float]]]:
-        """Кадры BGR → по каждому [(класс, [x1, y1, x2, y2], уверенность)]."""
+    def predict(self, frames: list, conf: float | None = None) -> list[list[tuple[str, list[float], float]]]:
+        """Кадры BGR → по каждому [(класс, [x1, y1, x2, y2], уверенность)]; conf — порог (по умолчанию DETECTOR_CONF)."""
         raise NotImplementedError
+
+    def predict_frames(self, frames: list) -> list[list[tuple[str, list[float], float]]]:
+        """Один проход или ансамбль видов (DETECTOR_VIEWS): каждый вид с порогом COMPONENT_CONF, слияние WBF,
+        затем DETECTOR_CONF по слитой уверенности. С DETECTOR_LOW_CONF порог — он: слабые боксы отделяет detect."""
+        floor = min(self.low_conf or self.conf, self.conf)
+        if not self.views:
+            return self.predict(frames, conf=floor if self.low_conf else None)
+        from cv.views import COMPONENT_CONF, TRANSFORMS, wbf
+
+        per_view = [self.predict([TRANSFORMS[name](f) for f in frames], conf=min(COMPONENT_CONF, floor))
+                    for name, _ in self.views]
+        weights = [w for _, w in self.views]
+        return [[d for d in wbf([p[i] for p in per_view], weights) if d[2] >= floor] for i in range(len(frames))]
 
     def detect(self, video: Path) -> list[dict]:
         """Только L1: боксы по кадрам после постобработки и признаки по пикселям экрана и сейфа."""
-        raw, chunk, out = [], [], []
+        raw, chunk, out, low = [], [], [], []
         # признаки по пикселям считаются сразу по пачке, чтобы не держать в памяти все кадры видео
         pixels: dict[float, dict] = {}
 
         def flush():
-            preds = self.predict([f for _, f in chunk])
+            preds = self.predict_frames([f for _, f in chunk])
             for (t, frame), dets in zip(chunk, preds):
+                if self.low_conf:
+                    low.extend({"t": round(t, 3), "cls": c, "bbox": [round(v, 1) for v in b], "conf": round(s, 3),
+                                "attributes": {"low": True}} for c, b, s in dets
+                               if s < self.conf and c in ("person", "reflection"))
+                    dets = [d for d in dets if d[2] >= self.conf]
                 raw.append((t, dets))
                 pixels[round(t, 3)] = {tuple(round(v, 1) for v in b): pixel_attributes(frame, c, b)
                                        for c, b, _ in dets if c in ("computer", "safe")}
@@ -201,7 +227,7 @@ class FrameDetector(Detector):
             if b["cls"] in ("computer", "safe"):
                 b["attributes"].update(pixels.get(b["t"], {}).get(tuple(b["bbox"]), {}))
             out.append(b)
-        return out
+        return out + low
 
     def run(self, video: Path, sha256: str) -> Detection:
         from decision.steps import analyze, with_vlm
@@ -211,6 +237,8 @@ class FrameDetector(Detector):
         boxes = self.detect(video)
         res = analyze(boxes, self.fps)
         note = f"{self.weights.name}, {self.fps:g} кадр/с"
+        if self.views:
+            note += ", виды " + " / ".join(f"{n} {w:.2f}" for n, w in self.views)
         if VLM_URL:  # спорные моменты — VLM (сервис vlm); недоступна — остаются правила
             ask = Asker(video, res["zones"])
             res = with_vlm(res, ask)
@@ -227,8 +255,8 @@ class YoloDetector(FrameDetector):
         self.model = YOLO(str(self.weights))
         self.names = self.model.names
 
-    def predict(self, frames: list) -> list[list[tuple[str, list[float], float]]]:
-        results = self.model.predict(frames, imgsz=640, conf=self.conf, verbose=False, device=self.device)
+    def predict(self, frames: list, conf: float | None = None) -> list[list[tuple[str, list[float], float]]]:
+        results = self.model.predict(frames, imgsz=640, conf=conf or self.conf, verbose=False, device=self.device)
         return [[(self.names[int(c)], b.tolist(), float(s))
                  for b, c, s in zip(r.boxes.xyxy.cpu().numpy(), r.boxes.cls.cpu().numpy(), r.boxes.conf.cpu().numpy())]
                 for r in results]
@@ -245,12 +273,37 @@ class RfDetrDetector(FrameDetector):
         self.model = {"small": RFDETRSmall, "nano": RFDETRNano}[size](
             pretrain_weights=str(self.weights), resolution=resolution, **({"device": self.device} if self.device else {}))
 
-    def predict(self, frames: list) -> list[list[tuple[str, list[float], float]]]:
+    def predict(self, frames: list, conf: float | None = None) -> list[list[tuple[str, list[float], float]]]:
         rgb = [f[:, :, ::-1].copy() for f in frames]
-        dets = self.model.predict(rgb, threshold=self.conf)
+        dets = self.model.predict(rgb, threshold=conf or self.conf)
         dets = dets if isinstance(dets, list) else [dets]
         return [[(CLASS_NAMES[int(c)], b.tolist(), float(s)) for b, c, s in zip(d.xyxy, d.class_id, d.confidence)
                  if 0 <= int(c) < len(CLASS_NAMES)] for d in dets]
+
+
+def apply_model_dir() -> str | None:
+    """MODEL_DIR → DETECTOR, DETECTOR_WEIGHTS, STEP_CLASSIFIER/STEP_MODEL, DETECTOR_CONF, RFDETR_*, DETECTOR_VIEWS, TRACKER,
+    MODEL_TAG из model.json.
+
+    Классификатор шагов обучен на L1 этих весов, поэтому релиз без него — только правила, а не чужой steps_<детектор>.
+    Каталог — по realpath: процесс закреплён на теге, даже если симлинк current переключат на ходу.
+    Возвращает тег; без MODEL_DIR — None и окружение не трогается."""
+    if not os.environ.get("MODEL_DIR"):
+        return None
+    root = Path(os.environ["MODEL_DIR"]).resolve()
+    manifest = json.loads((root / "model.json").read_text())
+    env = {"DETECTOR": manifest["detector"], "DETECTOR_WEIGHTS": str(root / manifest["weights"]["file"]),
+           "MODEL_TAG": manifest["tag"], "STEP_CLASSIFIER": "hybrid" if manifest.get("steps") else "rules"}
+    if manifest.get("steps"):
+        env["STEP_MODEL"] = str(root / manifest["steps"]["file"])
+    params = manifest.get("params") or {}
+    for name, var in (("conf", "DETECTOR_CONF"), ("rfdetr_size", "RFDETR_SIZE"), ("rfdetr_resolution", "RFDETR_RESOLUTION")):
+        if params.get(name) is not None:
+            env[var] = str(params[name])
+    env["DETECTOR_VIEWS"] = json.dumps(params["views"]) if params.get("views") else ""  # ансамбль видов кадра, cv.views
+    env["TRACKER"] = params.get("tracker") or "greedy"  # трекер людей L2, decision.tracking
+    os.environ.update(env)
+    return manifest["tag"]
 
 
 def get_detector(kind: str | None = None) -> Detector:

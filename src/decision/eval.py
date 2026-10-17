@@ -1,20 +1,24 @@
 """Оценка L2+L3 на кэше L1 (python -m cv.infer): вердикт, попадание в размеченную секунду, seq_accuracy.
 
   python -m decision.eval --detector yolo [--videos X-1 X-4] [--verbose]
+  MODEL_DIR=/data/runs/releases/<тег> python -m decision.eval --summary eval.json   # релиз модели (infra/model.sh)
 Группы: dev — видео, кадры или журнал которых использовались при обучении детектора и настройке правил;
 honest — остальные (val детектора и видео с нарушениями из violations_unreviewed.yaml).
-Отчёт — stdout и data/runs/eval/sop_<детектор>.json.
+Отчёт — stdout и data/runs/eval/sop_<детектор>[@<тег>][_<трекер>].json (--out); итоги по группам — --summary.
+TRACKER=bytetrack|botsort — трекер людей (decision.tracking), --cache-tag — опытный кэш L1 (cv.infer --cache-tag).
 """
 
 import argparse
 import csv
 import json
+import os
 from collections import defaultdict
+from pathlib import Path
 
 import yaml
 
-from cv.detectors import DATA_DIR, REFERENCE_DIR, Detection
-from cv.infer import cache_path
+from cv.detectors import DATA_DIR, REFERENCE_DIR, Detection, apply_model_dir
+from cv.infer import cache_path, detector_arg
 from cv.pipeline import build_video_events, load_spec
 from decision.sop import seq_accuracy
 from decision.steps import analyze, with_vlm
@@ -45,11 +49,18 @@ def visible(a: dict) -> bool:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--detector", required=True, choices=["yolo", "rfdetr"])
+    ap.add_argument("--detector", choices=["yolo", "rfdetr"], help="без MODEL_DIR обязателен")
     ap.add_argument("--videos", nargs="*")
     ap.add_argument("--verbose", action="store_true", help="печатать действия L2 по каждому видео")
     ap.add_argument("--vlm", action="store_true", help="спорные моменты — VLM (VLM_URL, ответы кэшируются в data/features)")
+    ap.add_argument("--out", type=Path, help="отчёт по видео; по умолчанию data/runs/eval/sop_<детектор>[@<тег>].json")
+    ap.add_argument("--summary", type=Path, help="итоги по группам в JSON (ворота выкатки модели в infra/model.sh)")
+    ap.add_argument("--cache-tag", help="опытный кэш l1_<детектор>@<метка>.json (cv.infer --cache-tag)")
     args = ap.parse_args()
+    tag = apply_model_dir()
+    detector = detector_arg(ap, tag, args.detector)
+    cache_tag = tag or args.cache_tag
+    tracker = os.environ.get("TRACKER", "greedy")
 
     with (DATA_DIR / "labels.csv").open() as f:
         rows = list(csv.DictReader(f))
@@ -69,7 +80,7 @@ def main() -> None:
     report = []
     for r in rows:
         name = r["video"]
-        path = cache_path(sha_of[name], args.detector)
+        path = cache_path(sha_of[name], detector, cache_tag)
         if not path.exists():
             print(f"{name:>5}: нет кэша L1 ({path})")
             continue
@@ -79,9 +90,9 @@ def main() -> None:
             from decision.vlm import VLM_MODEL, Asker
 
             ask = Asker(DATA_DIR / "videos" / f"{name}.mov", res["zones"],
-                        cache_file=path.parent / f"vlm_{args.detector}_{VLM_MODEL}.json", max_calls=50)
+                        cache_file=path.parent / f"vlm_{detector}_{VLM_MODEL}.json", max_calls=50)
             res = with_vlm(res, ask)
-        events = build_video_events(Detection(args.detector, instances=res["instances"]), spec, name)
+        events = build_video_events(Detection(detector, instances=res["instances"]), spec, name)
         viol = [e for e in events if e["status"] == "violation"]
         warn = [e for e in events if e["status"] == "warning"]
         verdict = "violation" if viol else "no_violation"
@@ -95,6 +106,7 @@ def main() -> None:
                 "label_t": labels_t.get(name, []), "verdict": verdict, "hits": hits, "seq_accuracy": seq,
                 "expected_type": (unreviewed.get(name) or {}).get("type") or (journals.get(name, {}).get("type")),
                 "review": (review.get(name) or {}).get("status"),
+                "tracks": {role: sum(r == role for r in res["roles"].values()) for role in ("cashier", "client")},
                 "violations": [{"t": e["t_start"], "title": e["title"]} for e in viol],
                 "warnings": [{"t": e["t_start"], "title": e.get("title") or e["event"]} for e in warn]}
         report.append(item)
@@ -113,6 +125,7 @@ def main() -> None:
             for a in res["actions"]:
                 print(f"        {a['t']:6.1f} {a['action']} {a.get('actor', '')} {a.get('object', '')} {a.get('target', '')}")
 
+    groups = {}
     for group in ("dev", "honest", "all"):
         part = [x for x in report if group == "all" or x["group"] == group]
         if not part:
@@ -123,19 +136,30 @@ def main() -> None:
         tn = sum(x["label"] == "no_violation" and x["verdict"] == "no_violation" for x in part)
         caught = sum(bool(x["hits"]) for x in part if x["label"] == "violation")
         seqs = [x["seq_accuracy"] for x in part if x["seq_accuracy"] is not None]
+        seq = round(sum(seqs) / len(seqs), 3) if seqs else None
+        groups[group] = {"videos": len(part), "tp": tp, "fp": fp, "fn": fn, "tn": tn,
+                         "accuracy": round((tp + tn) / len(part), 3), "hits": caught, "seq_accuracy": seq}
         print(f"{group:>6}: видео {len(part)}, точность вердикта {(tp + tn) / len(part):.2f} "
               f"(TP {tp}, FP {fp}, FN {fn}, TN {tn}), таймкод ±{CATCH_WINDOW_SEC} с: {caught}/{tp + fn}"
-              + (f", seq_accuracy {sum(seqs) / len(seqs):.2f}" if seqs else ""))
+              + (f", seq_accuracy {seq:.2f}" if seqs else ""))
     for status, short in REVIEW_SHORT.items():  # насколько видимы нарушения по степени доказанности в проверке
         part = [x for x in report if x["review"] == status]
         if part:
             print(f"проверка «{short}»: видео {len(part)}, модель нашла нарушение в "
                   f"{sum(x['verdict'] == 'violation' for x in part)}, таймкод ±{CATCH_WINDOW_SEC} с: "
                   f"{sum(bool(x['hits']) for x in part)}/{sum(x['label'] == 'violation' for x in part)}")
-    out = DATA_DIR / "runs" / "eval" / f"sop_{args.detector}{'_vlm' if args.vlm else ''}.json"
+    out = args.out or DATA_DIR / "runs" / "eval" / (f"sop_{detector}{f'@{cache_tag}' if cache_tag else ''}"
+                                                     f"{f'_{tracker}' if tracker != 'greedy' else ''}"
+                                                     f"{'_vlm' if args.vlm else ''}.json")
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(report, ensure_ascii=False, indent=1))
     print(f"→ {out}")
+    if args.summary:
+        missing = len(rows) - len(report)  # видео без кэша L1: ворота не должны сравнивать неполные прогоны
+        args.summary.parent.mkdir(parents=True, exist_ok=True)
+        args.summary.write_text(json.dumps({"detector": detector, "model": tag, "missing": missing, "groups": groups},
+                                           ensure_ascii=False, indent=1))
+        print(f"→ {args.summary}")
 
 
 if __name__ == "__main__":
