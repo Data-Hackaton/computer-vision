@@ -12,6 +12,7 @@ import csv
 import json
 import os
 import time
+from contextlib import closing
 
 from cv.detectors import DATA_DIR, apply_model_dir, get_detector
 
