@@ -57,15 +57,23 @@ def build_video_events(det: Detection, spec: dict, video_name: str = "video") ->
     events = build_events(video_name, instances, hits)
     # build_events сохраняет порядок равных событий; очередь различает даже полные дубликаты действия.
     probabilities = defaultdict(deque)
+    action_refs = defaultdict(deque)
     for idx, actions in enumerate(instance_actions, start=1):
         for a in actions:
             key = (idx, a["t"], a["action"], a.get("actor"), a.get("object"), a.get("target"))
             probabilities[key].append(a.get("p"))
+            action_refs[key].append(a)
     for e in events:
         key = (e["instance"], e["t_start"], e["event"], e.get("actor"), e.get("object"), e.get("target"))
         queue = probabilities.get(key)
         uncertain(e, queue.popleft() if queue else None)
-    return events + sequence_events(instance_actions, spec)
+        action = action_refs[key].popleft() if action_refs.get(key) else None
+        from decision.temporal import corroborate
+
+        corroborate(e, action, [a for acts in instance_actions for a in acts])
+    from decision.temporal import deduplicate
+
+    return deduplicate(events) + sequence_events(instance_actions, spec)
 
 
 def uncertain(e: dict, p: float | None) -> None:
@@ -171,7 +179,7 @@ def describe(e: dict, why: dict[str, str]) -> str:
     seen = f"{e['t_start']:.1f} с: {who + ' ' if who else ''}{what}."
     reason = why.get(e.get("title") or "")
     message = f"{seen} {reason}." if reason else seen
-    return " ".join(filter(None, (message, uncertainty_note(e))))
+    return " ".join(filter(None, (message, uncertainty_note(e), e.get("policy_reason"))))
 
 
 EVIDENCE_CONTEXT_SEC = 1.5  # соседние кадры-доказательства: до и после события
