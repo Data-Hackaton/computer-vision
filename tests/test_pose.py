@@ -119,6 +119,17 @@ def test_model_dir_sets_pose():
         env(**old)
 
 
+def test_close_is_idempotent():
+    from unittest.mock import Mock
+
+    model = object.__new__(pose.PoseEstimator)
+    native = model.landmarker = Mock()
+    model.close()
+    model.close()
+    native.close.assert_called_once()
+    assert model.landmarker is None
+
+
 if __name__ == "__main__":
     tests = [f for name, f in sorted(globals().items()) if name.startswith("test_")]
     for f in tests:
