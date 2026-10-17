@@ -86,9 +86,10 @@ def assign_roles(frames: list[tuple[float, list[dict]]], fps: float) -> tuple[di
     if not tracks:
         return {}, None
     longest = max(tracks, key=lambda k: len(tracks[k]))
-    feet = [((b[0] + b[2]) / 2, b[3]) for b in tracks[longest]]
-    seat = (statistics.median(x for x, _ in feet), statistics.median(y for _, y in feet))
-    height = statistics.median(b[3] - b[1] for b in tracks[longest])
+    # место — по первой четверти трека: в начале ролика кассир обычно сидит, дальше встаёт, ходит к сейфу, уходит
+    early = tracks[longest][: max(1, len(tracks[longest]) // 4)]
+    seat = (statistics.median((b[0] + b[2]) / 2 for b in early), statistics.median(b[3] for b in early))
+    height = statistics.median(b[3] - b[1] for b in early)
     roles = {}
     for tid, bxs in tracks.items():
         fx = statistics.median((b[0] + b[2]) / 2 for b in bxs)
@@ -148,6 +149,9 @@ def scene_states(frames: list[tuple[float, list[dict]]], roles: dict[int, str], 
         def on_table(b):
             return bool(table) and center_in(b, table)
 
+        def big(b):
+            return bool(table) and (b[2] - b[0]) * (b[3] - b[1]) >= 0.03 * (table[2] - table[0]) * (table[3] - table[1])
+
         in_machine = [b for b in notes if machine and overlap_share(b, machine) > 0.3]
         screen = desk_screen(boxes)
         if screen is not None:  # экран загорожен — прошлое значение
@@ -161,7 +165,8 @@ def scene_states(frames: list[tuple[float, list[dict]]], roles: dict[int, str], 
             "money_on_desk": int(any(on_table(b) and not held(b) and b not in in_machine for b in notes)),
             "money_in_machine": int(bool(in_machine)),
             "bundles_at_cashier": min(len(at_cashier), 2),
-            "foreign_on_desk": int(any(b["cls"] == "foreign_object" and on_table(b["bbox"])
+            # личная вещь — крупная (сумка, одежда): стаканы и мелочь на столе есть и в чистых видео (X-25)
+            "foreign_on_desk": int(any(b["cls"] == "foreign_object" and on_table(b["bbox"]) and big(b["bbox"])
                                        and not any(overlap_share(b["bbox"], p["bbox"]) > 0.6 for p in people)
                                        for b in boxes)),
             "bag_on_desk": int(any(b["cls"] == "bag" and on_table(b["bbox"]) and not held(b["bbox"]) for b in boxes)),
@@ -171,5 +176,9 @@ def scene_states(frames: list[tuple[float, list[dict]]], roles: dict[int, str], 
                 and (b["bbox"][1] + b["bbox"][3]) / 2 < c["bbox"][1] + 0.4 * (c["bbox"][3] - c["bbox"][1])
                 for c in cashiers) for b in boxes)),
             "screen_on": screen_prev,
+            # расстояние кассира до его места в ростах (None — кассира не видно); не сигнал, а подсказка для L2
+            "_cashier_d": min((((c["bbox"][0] + c["bbox"][2]) / 2 - seat["x"]) ** 2
+                               + (c["bbox"][3] - seat["y"]) ** 2) ** 0.5 / seat["h"] for c in cashiers)
+            if cashiers and seat else None,
         })
     return states

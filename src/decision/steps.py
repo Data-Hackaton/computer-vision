@@ -19,6 +19,7 @@ MAX_LENGTH_SEC = 10.0  # max_length_sec: длинный отрезок реже�
 # Сколько сигнал должен держаться, чтобы считаться событием (по умолчанию MIN_LENGTH_SEC).
 # Кассир «ушёл» — только если его нет дольше 3 с: клиент или стойка могут перекрыть его на секунду-две.
 # Клиент «ушёл» — если его нет дольше 2 с (трек рвётся в дверях); второй посетитель — дольше 3 с.
+LEAVE_SEAT_D = 0.3  # кассир «у места» — ближе 0,3 роста к своему месту
 HOLD_SEC = {"cashier_present": 3.0, "client_present": 2.0, "visitors": 3.0, "foreign_on_desk": 3.0,
             "phone_at_head": 2.0, "bag_on_desk": 1.5, "screen_on": 1.5}
 
@@ -55,6 +56,11 @@ def segments(states: list[dict], fps: float) -> list[dict]:
         series[s] = debounce(v, max(1, round(HOLD_SEC.get(s, MIN_LENGTH_SEC) * fps)))
     ts = [st["t"] for st in states]
     dt = 1 / fps
+    # кассир пропал в конце ролика (ушёл, и запись кончилась) — это уход, даже если пропал меньше чем на HOLD_SEC
+    raw = smooth([st["cashier_present"] for st in states], round(SMOOTH_SEC * fps))
+    tail = next((i for i in range(len(raw) - 1, -1, -1) if raw[i]), -1) + 1
+    if len(raw) - tail >= fps and tail > 0:
+        series["cashier_present"][tail:] = [0] * (len(raw) - tail)
     out: list[dict] = []
     for i, t in enumerate(ts):
         state = {s: series[s][i] for s in SIGNALS}
@@ -77,10 +83,11 @@ class RulesClassifier:
               "foreign_on_desk": ("foreign_object", "desk"), "bag_on_desk": ("bag", "desk")}
 
     def initial(self, seg: dict) -> list[dict]:
-        """Что уже лежит в первом кадре — «положено» до начала видео."""
+        """Что уже лежит в первом кадре — «положено» до начала видео. Кроме денег: на столе с начала ролика лежат
+        бумаги и удостоверения, которые детектор путает с купюрами (ложные «деньги прошлого клиента» в X-37, X-39)."""
         t, st = seg["t_start"], seg["state"]
         out = [act(t, "put", object=o, target=g) for s, (o, g) in self.PLACED.items()
-               if s != "money_in_machine" and st[s]]
+               if s not in ("money_in_machine", "money_on_desk") and st[s]]
         if st["screen_on"] and st["cashier_present"]:
             out.append(act(t, "use_laptop"))
         return out
@@ -157,11 +164,21 @@ def analyze(boxes: list[dict], fps: float) -> dict:
     frames = frames_of(boxes)
     track_people(frames, fps)
     roles, seat = assign_roles(frames, fps)
-    segs = segments(scene_states(frames, roles, seat), fps)
+    states = scene_states(frames, roles, seat)
+    segs = segments(states, fps)
     clf = get_classifier()
     actions = clf.initial(segs[0]) if segs else []
     for prev, cur in zip(segs, segs[1:]):
         actions += clf.classify(prev, cur)
+    # уход кассира — с момента, когда он последний раз был у своего места (встал и пошёл), а не когда пропал из
+    # кадра; но не раньше его последнего действия со столом (положил деньги и ушёл — деньги остались на столе)
+    for a in actions:
+        if a["action"] == "person_leave" and a["actor"] == "cashier":
+            at_seat = [st["t"] for st in states if st["t"] <= a["t"] and st["_cashier_d"] is not None
+                       and st["_cashier_d"] < LEAVE_SEAT_D]
+            last_desk = [b["t"] for b in actions if b.get("target") == "desk" and b["t"] < a["t"]]
+            if at_seat:
+                a["t"] = round(max([at_seat[-1]] + [t + 0.1 for t in last_desk]), 2)
     return {"roles": roles, "segments": segs, "actions": [a for a in actions if not a["action"].startswith("_")],
             "instances": to_instances(actions)}
 
