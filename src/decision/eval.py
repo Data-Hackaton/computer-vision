@@ -27,6 +27,9 @@ DEV = {"X-3", "X-5", "X-8", "X-10", "X-12", "X-14", "X-16", "X-21", "X-23", "X-2
 VISIBLE = {("person_enter", "client"), ("person_leave", "client"), ("person_leave", "cashier"), ("put", "cash_machine"),
            ("take", "cash_machine"), ("put", "desk"), ("take", "desk"), ("split_bundle", None), ("phone_call", None)}
 
+REVIEW_SHORT = {"supported": "доказано", "probable": "вероятно", "insufficient": "мало", "conditional_issue": "условно",
+                "no_supported_violation": "чисто"}
+
 
 def key(a: dict) -> tuple:
     return (a["action"], a.get("actor"), a.get("object"), a.get("target"))
@@ -60,6 +63,8 @@ def main() -> None:
     journals = {**yaml.safe_load((REFERENCE_DIR / "actions.yaml").read_text()),
                 **yaml.safe_load((REFERENCE_DIR / "violations.yaml").read_text())}
     unreviewed = yaml.safe_load((REFERENCE_DIR / "violations_unreviewed.yaml").read_text())
+    review_path = REFERENCE_DIR / "video_review.yaml"  # «Полная проверка ForteBank»: статус доказанности по видео
+    review = yaml.safe_load(review_path.read_text()) if review_path.exists() else {}
 
     report = []
     for r in rows:
@@ -89,12 +94,14 @@ def main() -> None:
         item = {"video": name, "group": "dev" if name in DEV else "honest", "label": r["verdict"],
                 "label_t": labels_t.get(name, []), "verdict": verdict, "hits": hits, "seq_accuracy": seq,
                 "expected_type": (unreviewed.get(name) or {}).get("type") or (journals.get(name, {}).get("type")),
+                "review": (review.get(name) or {}).get("status"),
                 "violations": [{"t": e["t_start"], "title": e["title"]} for e in viol],
                 "warnings": [{"t": e["t_start"], "title": e.get("title") or e["event"]} for e in warn]}
         report.append(item)
         mark = "OK " if verdict == r["verdict"] else "ERR"
         found = "; ".join(f"{v['t']:.1f} {v['title']}" for v in item["violations"][:3])
         print(f"{mark} {name:>5} [{item['group']:>6}] {r['verdict']:>12} → {verdict:<12} "
+              f"{REVIEW_SHORT.get(item['review'], '?'):<9} "
               f"попал {len(hits)}/{len(item['label_t'])} seq={seq} | {found}")
         if args.verbose:
             prev = {}
@@ -119,6 +126,12 @@ def main() -> None:
         print(f"{group:>6}: видео {len(part)}, точность вердикта {(tp + tn) / len(part):.2f} "
               f"(TP {tp}, FP {fp}, FN {fn}, TN {tn}), таймкод ±{CATCH_WINDOW_SEC} с: {caught}/{tp + fn}"
               + (f", seq_accuracy {sum(seqs) / len(seqs):.2f}" if seqs else ""))
+    for status, short in REVIEW_SHORT.items():  # насколько видимы нарушения по степени доказанности в проверке
+        part = [x for x in report if x["review"] == status]
+        if part:
+            print(f"проверка «{short}»: видео {len(part)}, модель нашла нарушение в "
+                  f"{sum(x['verdict'] == 'violation' for x in part)}, таймкод ±{CATCH_WINDOW_SEC} с: "
+                  f"{sum(bool(x['hits']) for x in part)}/{sum(x['label'] == 'violation' for x in part)}")
     out = DATA_DIR / "runs" / "eval" / f"sop_{args.detector}{'_vlm' if args.vlm else ''}.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(report, ensure_ascii=False, indent=1))

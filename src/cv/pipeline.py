@@ -72,17 +72,47 @@ def sequence_events(instance_actions: list[list[dict]], spec: dict) -> list[dict
     return sorted(out, key=lambda e: e["t_start"])
 
 
-def why_by_title(spec: dict) -> dict[str, str]:
-    """Пояснение правила по его названию — из scenarios.yaml, без ссылок на видео эталона «(X-1)»."""
+def load_norms() -> dict:
+    """Нормы: выверенные вручную norms.yaml поверх пунктов из аудита (norms_review.yaml)."""
+    out = {}
+    for name in ("norms_review.yaml", "norms.yaml"):
+        path = REFERENCE_DIR / name
+        if path.exists():
+            out.update(yaml.safe_load(path.read_text()) or {})
+    return out
+
+
+def why_by_title(spec: dict, norms: dict | None = None) -> dict[str, str]:
+    """Пояснение правила по его названию — из scenarios.yaml, без ссылок на видео эталона «(X-1)»; косвенные и
+    условные основания (basis) — с пометкой: прямой норматив (norm) бэкенд добавляет в ответ жюри сам."""
+    norms = load_norms() if norms is None else norms
     rules = [inv for sc in spec["scenarios"].values() for inv in sc.get("invariants", [])]
     rules += spec.get("video_invariants", [])
     out: dict[str, list[str]] = {}
+    basis: dict[str, dict[str, list[str]]] = {}  # правило → отношение → нормы
     for inv in rules:
         if inv.get("title") and inv.get("why"):
             why = inv["why"].split(" (X-")[0].strip()
             if why not in out.setdefault(inv["title"], []):
                 out[inv["title"]].append(why)
+            for b in inv.get("basis", []):
+                short = norms.get(b["norm"], {}).get("short")
+                names = basis.setdefault(inv["title"], {}).setdefault(b["relation"], [])
+                if short and short not in names:
+                    names.append(short)
+    for title, by_relation in basis.items():
+        out[title] += [f"основание ({rel}): {join_points(names)}" for rel, names in by_relation.items() if names]
     return {title: "; ".join(whys)[:1].upper() + "; ".join(whys)[1:] for title, whys in out.items()}
+
+
+def join_points(shorts: list[str]) -> str:
+    """«Правила №14, п.8» + «Правила №14, п.16» → «Правила №14, пп.8, 16»."""
+    acts: dict[str, list[str]] = {}
+    for short in shorts:
+        act, sep, point = short.rpartition(", п.")
+        acts.setdefault(act if sep else short, []).append(point if sep else "")
+    return "; ".join(f"{act}, {'пп.' if len(points) > 1 else 'п.'}{', '.join(points)}" if points[0] else act
+                     for act, points in acts.items())
 
 
 def describe(e: dict, why: dict[str, str]) -> str:
