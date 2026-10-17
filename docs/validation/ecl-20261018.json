@@ -1,0 +1,827 @@
+{
+  "code_commit": "58e844afd7c4b5d84b21ea56435af09f3bee13c4",
+  "data_commit": "8ab1bd93e677c32542771174508f6e87531feb05",
+  "method": "same L1 boxes; nested video folds for ECL; fixed upstream L1/L2; VLM disabled",
+  "input_cache_tag": "fresh-pose",
+  "inputs": [
+    {
+      "video": "X-1",
+      "sha256": "8911a9219b9433091824e553a70bb80335f075fd8ac982d2062d2ecf023c16bc",
+      "l1_sha256": "0eef7bc658389c1ecf0672304936767449bcc347bcaf0a65dd79c4088e3ac25d",
+      "pose_boxes": 211
+    },
+    {
+      "video": "X-2",
+      "sha256": "9932ae0a10d3b9371bf52ea558dc19092fcf47adcd275a73a52a56b95464bca6",
+      "l1_sha256": "a36b4930759eb57e012753f4f7b2183b86766aa01cb26b0b695694828dc85302",
+      "pose_boxes": 118
+    },
+    {
+      "video": "X-3",
+      "sha256": "21468fcef4ea5f45ce7d465e620f84e09c8b50314f4ecdc06f69224c701b3a5b",
+      "l1_sha256": "b50a758c0493f3ad759a0ce1f3c55c3cb32c77226ffd7eeea00d269e3a917c3e",
+      "pose_boxes": 175
+    },
+    {
+      "video": "X-4",
+      "sha256": "5385be9420e6a70547d6bcfd0b13d60f9c0738877645afa277d09550a96b8445",
+      "l1_sha256": "6911167f3f37464f30620cc9d1043bb33c8323fda54789fefdf97ac05760094b",
+      "pose_boxes": 555
+    },
+    {
+      "video": "X-5",
+      "sha256": "1f5840bff58f298e89c4afa00cb1c18f6dafc5c4096c251d9b507604ebefe906",
+      "l1_sha256": "247e360b5642d49dd3848417644be8a90505ed9b18e9efc231b6199f6be628a2",
+      "pose_boxes": 582
+    },
+    {
+      "video": "X-8",
+      "sha256": "6a53e10acdcf52396ad5b1697eead32d8322c0911d792523a5c33fe5b388f4e7",
+      "l1_sha256": "2cd5ed8b94cc6925472daf558d6dc527ddc357731faa0d55ea0cb337acd52bb9",
+      "pose_boxes": 253
+    },
+    {
+      "video": "X-10",
+      "sha256": "57a0e46c7a45f0e831f61d9c80722fefe4b74dbcfe1d3031ff58307d481f9a5c",
+      "l1_sha256": "326a0c0bbb83d1b82b5a452f60e413bd895ecdf28772e9fa351c93ba6adf375f",
+      "pose_boxes": 121
+    },
+    {
+      "video": "X-11",
+      "sha256": "b3a954a5b761ad47943e061599315e3fe9d22573eeb92bb14bf315cdcd422fc5",
+      "l1_sha256": "73a9be68509cb8693e37864297cba10d694e8288cb9405870873c0eb2eeb91c3",
+      "pose_boxes": 138
+    },
+    {
+      "video": "X-12",
+      "sha256": "955755baf54418b48ea645dcd98e7e8dcca1d1e227e9b286a9427062db304fd4",
+      "l1_sha256": "f8663c0411880b1986e5eecc311ee7b3431a61cc0dbabb4f26d2ef6ba3c63765",
+      "pose_boxes": 237
+    },
+    {
+      "video": "X-13",
+      "sha256": "a37930cf119bb691be77d8624b18333b04d9c67066a7f4627d63e3208dfa6057",
+      "l1_sha256": "8d4c1f4baa4ea49331c681f0a1e2e6a995df8370f9687306461e3fd92005df0c",
+      "pose_boxes": 311
+    },
+    {
+      "video": "X-14",
+      "sha256": "7d6890ecb4a2b28bbdd3b61b6711566eee84a53ab3439c40cd9b6a3a6714c681",
+      "l1_sha256": "98522558fbada6083f4f82f2899845cfb9e2588a6ff63ec0b58dc0cb2901f45c",
+      "pose_boxes": 890
+    },
+    {
+      "video": "X-15",
+      "sha256": "69caf59620fcd80bedcb664514730ab38f2f800da27000a8e037d7440be5dc7a",
+      "l1_sha256": "5905b24d302cfcf4ddda525cf2236c8927ed3d145435c92862221d0ad6fc7880",
+      "pose_boxes": 115
+    },
+    {
+      "video": "X-16",
+      "sha256": "3f516431cf37e3900b7eae857a7b09be258f485702ab56bc6e5b6129103f1fa5",
+      "l1_sha256": "c674c963eb1c0fbbf9d8e988d85f5f59a9946712e76441c06645216995734bdd",
+      "pose_boxes": 109
+    },
+    {
+      "video": "X-17",
+      "sha256": "0378b8026b2e6afd1775a5d0fdd12dd09c491785b626e9c20428f7dc6bd59364",
+      "l1_sha256": "598a654f1cb3ebdee8f09fd8ec2eca97c831340d159e5f9f0bebbcec9728a224",
+      "pose_boxes": 70
+    },
+    {
+      "video": "X-18",
+      "sha256": "90607b0b0cb772fcf29b0c7e0e56fa6af36da6fac0efe93b8a616b5de94a156c",
+      "l1_sha256": "cfa336e586f9ab496f326b7ff52906a849b94103d4c2a561d181281cf825e4a4",
+      "pose_boxes": 170
+    },
+    {
+      "video": "X-19",
+      "sha256": "16065504b21260bff18698c7bbf048ffa356c9de43d43b92643b6c2eddedac0f",
+      "l1_sha256": "8e3ef60af3f8017c1b1f1ec9aeed9058d70375cf2cf5708469e4c3a860c10b45",
+      "pose_boxes": 404
+    },
+    {
+      "video": "X-20",
+      "sha256": "7e585e33517f7258bd2d1ed3e139556609bc997bb07b78355555060ef193b77a",
+      "l1_sha256": "7ee0bcba769ecdb41612a103591decb0df8e9f18f252e4cf202d7188a9c9cab9",
+      "pose_boxes": 46
+    },
+    {
+      "video": "X-21",
+      "sha256": "efd876a04224cac781ac64bf5d6e107ded67340b7b7715fd9ca3408b240a1075",
+      "l1_sha256": "72cc35994606edd8faf4a00263444bcb18a56200613a78e9f6d0bfffad97c423",
+      "pose_boxes": 77
+    },
+    {
+      "video": "X-22",
+      "sha256": "c9a30d44907e4a41b3a8ccf101774cd2e0804de20927bfbc9e1ccba1f2326b78",
+      "l1_sha256": "c02b2b0ee924d64129d8cce01fedbcdec5648657d998cdb8b5f304fe6e8788f4",
+      "pose_boxes": 67
+    },
+    {
+      "video": "X-23",
+      "sha256": "b637677ef5a7f0fa54d9f116ce6493cf74a4c99b8149a9c9916b96ef257535bd",
+      "l1_sha256": "9b542a3c795c0ddb57eebd27b27a959898ac41846a0226cd30658ee8b495d995",
+      "pose_boxes": 41
+    },
+    {
+      "video": "X-24",
+      "sha256": "c175a683749401d5a9ecf6f1c188b64fa8a09543f41482c1e4eb2232255715d3",
+      "l1_sha256": "819efb16db54b2e31ddaa63f3ed6673aa85cda0291c216391d24c6710d29ffe7",
+      "pose_boxes": 57
+    },
+    {
+      "video": "X-25",
+      "sha256": "901f61cf1a1b8754dda56466308c19fc203a1a4c0e85d1e7827849d34e2d52f0",
+      "l1_sha256": "552d549a87e07fff27448bae054f234275430d04bf5047b04a432cb2c900cd24",
+      "pose_boxes": 135
+    },
+    {
+      "video": "X-26",
+      "sha256": "e3a00b6e0f38b1d9b5498140f14906c71e204359262a90ce7a9974d64bf081e9",
+      "l1_sha256": "d9cc1932cc04ab995a723559a4315ff2aef4aabf67d5f8528de1e1bc58c14b05",
+      "pose_boxes": 83
+    },
+    {
+      "video": "X-27",
+      "sha256": "d3d21494d74e40a7586fe4f6164e515f6621a2d413538c4e15c67d394e85fc2d",
+      "l1_sha256": "0926bdd1c173730648c6e82c1d87489ec9cafd4cd0a48b9762962391510fc805",
+      "pose_boxes": 110
+    },
+    {
+      "video": "X-28",
+      "sha256": "d15ef04bcfae571bd2d7fc4e4d709ba595ae19f44136a43e7277f17e7b6e5b6d",
+      "l1_sha256": "403a750fa1db0b12936197b472cea11c603c1ca8a8f5614a4b7193ebb2e949a6",
+      "pose_boxes": 59
+    },
+    {
+      "video": "X-29",
+      "sha256": "b9bfb76ac8ea47eb368fc78a2f6370e4d98e79185972f63cf301ee22f12b5941",
+      "l1_sha256": "ab0935e6c56ed8d73c44d460c14c2c5edb5004c28e0e97cd90afbf3a2f07adae",
+      "pose_boxes": 58
+    },
+    {
+      "video": "X-30",
+      "sha256": "05af66ce27b83d7c10c5d33b6f1847ec042c01ed21afdcbd43a13abcefd28199",
+      "l1_sha256": "f75b966c04203600e291959e98f1e090fe9a1e23099cdfc034a8fa7593b0f9c9",
+      "pose_boxes": 101
+    },
+    {
+      "video": "X-31",
+      "sha256": "6a9fa7dd2e6db4cbe57f3c96a6cb256f23c04aa4e6fd44622fdf5de662cc0649",
+      "l1_sha256": "d918d02210432149cd6c371ce7b1b2c701d91aa2a8b345125333d675119aa46b",
+      "pose_boxes": 101
+    },
+    {
+      "video": "X-32",
+      "sha256": "bcc277cbf1a36245156b2bb9a0e0b826432390b42040c0b82201a8c21ab23ce9",
+      "l1_sha256": "357bbf76d8564dec8ea829c67c2c68a81f6fc462ed9bb42c58f477b655e1908f",
+      "pose_boxes": 75
+    },
+    {
+      "video": "X-33",
+      "sha256": "209e8aaca88df59064e5f28b3bcc489fee3eea9eb920889b69c03c83d52430c6",
+      "l1_sha256": "3cedb1c99c387b9a9980f506a155b11cb8475a7c457bfb95bc0b9b750f28a16f",
+      "pose_boxes": 45
+    },
+    {
+      "video": "X-34",
+      "sha256": "f3e351bea71150f4e8c76e2c8f0656a4e92063319d7cd39e264078c5ba9139c3",
+      "l1_sha256": "bb80f89a49dcd4c3bc2b2c8a7af991f7540dc455251a3ce95c69b236030f1f16",
+      "pose_boxes": 133
+    },
+    {
+      "video": "X-35",
+      "sha256": "26430119e074d6f0eb5dbc7ec3e26bbc31cf18903265bb4372bd7d7104908640",
+      "l1_sha256": "834b8e656e2c6b0d6a0fb55b0c08cbc49d7fe50398263a6d6b78b6d1e907c095",
+      "pose_boxes": 344
+    },
+    {
+      "video": "X-37",
+      "sha256": "ac4cf04844c0aa08a5e19f5f7fe984f1477943294922d6ef77bdc5b88b97160e",
+      "l1_sha256": "7807abeb9eca600d4cf6579426f24f402dfa69945cd226f70567fc8b35292410",
+      "pose_boxes": 100
+    },
+    {
+      "video": "X-38",
+      "sha256": "5a6f6a13ef88191ec1d9a2a303f1be74d16aa3381a57aaadba8850aac715ff10",
+      "l1_sha256": "7d3e64f22153c696c878ac3bf86eebf0cd69d8919667762f7975c17f19b6c7c2",
+      "pose_boxes": 379
+    },
+    {
+      "video": "X-39",
+      "sha256": "deeeee54539fb894b17447296bd7f0807b9dc662bad9af4dcd27f4fbdd677187",
+      "l1_sha256": "c72ad7abeeead110bc5e30a0af05162fa2b454798ccd62209414647ec0072569",
+      "pose_boxes": 464
+    },
+    {
+      "video": "X-40",
+      "sha256": "6a81739ced0efdcd4a4feb76ea16562a20ceb53a2232a801528716c450366c9f",
+      "l1_sha256": "8b1b4635623bceb56b6f5d2325d8dba91419afbfeeac899bcadfd56c376425a7",
+      "pose_boxes": 27
+    },
+    {
+      "video": "X-43",
+      "sha256": "39e28d7be01cdb090ede1881ce3ef704fa413271deb69d6735c1953f340d6069",
+      "l1_sha256": "47599d68634092ec4eab92740126be1874a8f0017aa05e5b2f8e37d7a7bf1102",
+      "pose_boxes": 95
+    },
+    {
+      "video": "X-44",
+      "sha256": "9774ed882153af3ba1a7e71c9b9249619e2b3a97ae336aad6143369802ca3522",
+      "l1_sha256": "51091fd03ccb37b1f6506e326bb351210fad711e6b2ed6347815430402a2406e",
+      "pose_boxes": 64
+    },
+    {
+      "video": "X-45",
+      "sha256": "524bf9ff2d5e81211dbbeff73129dbb5f3a5e5e35a64f443f53e16b1c2d471c7",
+      "l1_sha256": "b102cb65b270b1189b4252645835a782715763b2de5a4801708675b90296f14a",
+      "pose_boxes": 128
+    },
+    {
+      "video": "X-46",
+      "sha256": "66fc5d28c2371592f9260305589bdc86636fdd2ebe7a7ec976eec00a23d43df4",
+      "l1_sha256": "261d3fef9becd9715913ba7e0fbb9f6e0049b8d7a749e649f3665de39034ca91",
+      "pose_boxes": 62
+    }
+  ],
+  "variants": {
+    "baseline": {
+      "summary": {
+        "detector": "yolo",
+        "model": null,
+        "missing": 0,
+        "groups": {
+          "dev": {
+            "videos": 20,
+            "tp": 2,
+            "fp": 1,
+            "fn": 3,
+            "tn": 14,
+            "accuracy": 0.8,
+            "hits": 1,
+            "seq_accuracy": 0.129
+          },
+          "honest": {
+            "videos": 20,
+            "tp": 4,
+            "fp": 0,
+            "fn": 12,
+            "tn": 4,
+            "accuracy": 0.4,
+            "hits": 2,
+            "seq_accuracy": 0.25
+          },
+          "all": {
+            "videos": 40,
+            "tp": 6,
+            "fp": 1,
+            "fn": 15,
+            "tn": 18,
+            "accuracy": 0.6,
+            "hits": 3,
+            "seq_accuracy": 0.149
+          }
+        }
+      },
+      "false_positives": [
+        "X-31"
+      ],
+      "evaluation_wall_sec": 16.171
+    },
+    "baseline-ecl": {
+      "summary": {
+        "detector": "yolo",
+        "model": null,
+        "missing": 0,
+        "groups": {
+          "dev": {
+            "videos": 20,
+            "tp": 2,
+            "fp": 1,
+            "fn": 3,
+            "tn": 14,
+            "accuracy": 0.8,
+            "hits": 1,
+            "seq_accuracy": 0.129
+          },
+          "honest": {
+            "videos": 20,
+            "tp": 3,
+            "fp": 0,
+            "fn": 13,
+            "tn": 4,
+            "accuracy": 0.35,
+            "hits": 1,
+            "seq_accuracy": 0.25
+          },
+          "all": {
+            "videos": 40,
+            "tp": 5,
+            "fp": 1,
+            "fn": 16,
+            "tn": 18,
+            "accuracy": 0.575,
+            "hits": 2,
+            "seq_accuracy": 0.149
+          }
+        }
+      },
+      "false_positives": [
+        "X-31"
+      ],
+      "evaluation_wall_sec": 16.887
+    },
+    "pose": {
+      "summary": {
+        "detector": "yolo",
+        "model": null,
+        "missing": 0,
+        "groups": {
+          "dev": {
+            "videos": 20,
+            "tp": 2,
+            "fp": 1,
+            "fn": 3,
+            "tn": 14,
+            "accuracy": 0.8,
+            "hits": 1,
+            "seq_accuracy": 0.129
+          },
+          "honest": {
+            "videos": 20,
+            "tp": 4,
+            "fp": 0,
+            "fn": 12,
+            "tn": 4,
+            "accuracy": 0.4,
+            "hits": 2,
+            "seq_accuracy": 0.25
+          },
+          "all": {
+            "videos": 40,
+            "tp": 6,
+            "fp": 1,
+            "fn": 15,
+            "tn": 18,
+            "accuracy": 0.6,
+            "hits": 3,
+            "seq_accuracy": 0.149
+          }
+        }
+      },
+      "false_positives": [
+        "X-31"
+      ],
+      "evaluation_wall_sec": 16.491
+    },
+    "pose-ecl": {
+      "summary": {
+        "detector": "yolo",
+        "model": null,
+        "missing": 0,
+        "groups": {
+          "dev": {
+            "videos": 20,
+            "tp": 2,
+            "fp": 1,
+            "fn": 3,
+            "tn": 14,
+            "accuracy": 0.8,
+            "hits": 1,
+            "seq_accuracy": 0.129
+          },
+          "honest": {
+            "videos": 20,
+            "tp": 3,
+            "fp": 0,
+            "fn": 13,
+            "tn": 4,
+            "accuracy": 0.35,
+            "hits": 1,
+            "seq_accuracy": 0.25
+          },
+          "all": {
+            "videos": 40,
+            "tp": 5,
+            "fp": 1,
+            "fn": 16,
+            "tn": 18,
+            "accuracy": 0.575,
+            "hits": 2,
+            "seq_accuracy": 0.149
+          }
+        }
+      },
+      "false_positives": [
+        "X-31"
+      ],
+      "evaluation_wall_sec": 16.442
+    }
+  },
+  "calibration": {
+    "baseline": {
+      "method": "nested leave-one-video-out; fixed upstream L1/L2",
+      "overall": {
+        "candidates": 110,
+        "positive": 72,
+        "scored": 110,
+        "omitted": 0,
+        "auc": 0.7298976608187134,
+        "brier": 0.20651363091073355
+      },
+      "classes": {
+        "give:banknotes>cashier": {
+          "candidates": 11,
+          "positive": 7,
+          "scored": 11,
+          "omitted": 0,
+          "auc": 0.8571428571428572,
+          "brier": 0.15334313590775692,
+          "threshold_assessed": 11,
+          "positive_kept": 7,
+          "positive_rejected": 0,
+          "negative_rejected": 2
+        },
+        "give:id_card>cashier": {
+          "candidates": 8,
+          "positive": 7,
+          "scored": 8,
+          "omitted": 0,
+          "auc": 0.5714285714285714,
+          "brier": 0.16273575664793247,
+          "threshold_assessed": 8,
+          "positive_kept": 5,
+          "positive_rejected": 2,
+          "negative_rejected": 0
+        },
+        "inspect": {
+          "candidates": 7,
+          "positive": 6,
+          "scored": 7,
+          "omitted": 0,
+          "auc": 0.16666666666666666,
+          "brier": 0.20616545301548286,
+          "threshold_assessed": 7,
+          "positive_kept": 5,
+          "positive_rejected": 1,
+          "negative_rejected": 0
+        },
+        "person_enter:client": {
+          "candidates": 15,
+          "positive": 11,
+          "scored": 15,
+          "omitted": 0,
+          "auc": 0.34090909090909094,
+          "brier": 0.2859967135720552,
+          "threshold_assessed": 15,
+          "positive_kept": 9,
+          "positive_rejected": 2,
+          "negative_rejected": 0
+        },
+        "person_enter:visitor": {
+          "candidates": 3,
+          "positive": 2,
+          "scored": 3,
+          "omitted": 0,
+          "auc": 0.0,
+          "brier": 0.5826076696040882,
+          "threshold_assessed": 3,
+          "positive_kept": 1,
+          "positive_rejected": 1,
+          "negative_rejected": 0
+        },
+        "person_leave:cashier": {
+          "candidates": 6,
+          "positive": 3,
+          "scored": 6,
+          "omitted": 0,
+          "auc": 0.4444444444444445,
+          "brier": 0.32843556661726264,
+          "threshold_assessed": 6,
+          "positive_kept": 3,
+          "positive_rejected": 0,
+          "negative_rejected": 1
+        },
+        "person_leave:client": {
+          "candidates": 7,
+          "positive": 2,
+          "scored": 7,
+          "omitted": 0,
+          "auc": 0.7,
+          "brier": 0.23422028464874609,
+          "threshold_assessed": 7,
+          "positive_kept": 2,
+          "positive_rejected": 0,
+          "negative_rejected": 3
+        },
+        "put:banknotes>cash_machine": {
+          "candidates": 6,
+          "positive": 1,
+          "scored": 6,
+          "omitted": 0,
+          "auc": 0.8,
+          "brier": 0.2527507016700896,
+          "threshold_assessed": 1,
+          "positive_kept": 0,
+          "positive_rejected": 0,
+          "negative_rejected": 0
+        },
+        "safe_close": {
+          "candidates": 15,
+          "positive": 12,
+          "scored": 15,
+          "omitted": 0,
+          "auc": 0.6944444444444444,
+          "brier": 0.14251983453643008,
+          "threshold_assessed": 15,
+          "positive_kept": 10,
+          "positive_rejected": 2,
+          "negative_rejected": 2
+        },
+        "safe_open": {
+          "candidates": 9,
+          "positive": 9,
+          "scored": 9,
+          "omitted": 0,
+          "auc": null,
+          "brier": 0.05562248332930112,
+          "threshold_assessed": 9,
+          "positive_kept": 8,
+          "positive_rejected": 1,
+          "negative_rejected": 0
+        },
+        "screen_lock": {
+          "candidates": 3,
+          "positive": 2,
+          "scored": 3,
+          "omitted": 0,
+          "auc": 0.0,
+          "brier": 0.7215884564930443,
+          "threshold_assessed": 3,
+          "positive_kept": 2,
+          "positive_rejected": 0,
+          "negative_rejected": 0
+        },
+        "sort_banknotes": {
+          "candidates": 6,
+          "positive": 6,
+          "scored": 6,
+          "omitted": 0,
+          "auc": null,
+          "brier": 0.043733474799696144,
+          "threshold_assessed": 6,
+          "positive_kept": 5,
+          "positive_rejected": 1,
+          "negative_rejected": 0
+        },
+        "take:banknotes>cash_machine": {
+          "candidates": 6,
+          "positive": 0,
+          "scored": 6,
+          "omitted": 0,
+          "auc": null,
+          "brier": 0.05511291829166465,
+          "threshold_assessed": 0,
+          "positive_kept": 0,
+          "positive_rejected": 0,
+          "negative_rejected": 0
+        },
+        "use_laptop": {
+          "candidates": 8,
+          "positive": 4,
+          "scored": 8,
+          "omitted": 0,
+          "auc": 0.8125,
+          "brier": 0.21550047127595556,
+          "threshold_assessed": 8,
+          "positive_kept": 3,
+          "positive_rejected": 1,
+          "negative_rejected": 3
+        }
+      }
+    },
+    "pose": {
+      "method": "nested leave-one-video-out; fixed upstream L1/L2",
+      "overall": {
+        "candidates": 110,
+        "positive": 72,
+        "scored": 110,
+        "omitted": 0,
+        "auc": 0.7302631578947368,
+        "brier": 0.2064298299170679
+      },
+      "classes": {
+        "give:banknotes>cashier": {
+          "candidates": 11,
+          "positive": 7,
+          "scored": 11,
+          "omitted": 0,
+          "auc": 0.8571428571428572,
+          "brier": 0.15331528419131357,
+          "threshold_assessed": 11,
+          "positive_kept": 7,
+          "positive_rejected": 0,
+          "negative_rejected": 2
+        },
+        "give:id_card>cashier": {
+          "candidates": 8,
+          "positive": 7,
+          "scored": 8,
+          "omitted": 0,
+          "auc": 0.5714285714285714,
+          "brier": 0.16261509492314563,
+          "threshold_assessed": 8,
+          "positive_kept": 5,
+          "positive_rejected": 2,
+          "negative_rejected": 0
+        },
+        "inspect": {
+          "candidates": 7,
+          "positive": 6,
+          "scored": 7,
+          "omitted": 0,
+          "auc": 0.16666666666666666,
+          "brier": 0.2062205222551757,
+          "threshold_assessed": 7,
+          "positive_kept": 5,
+          "positive_rejected": 1,
+          "negative_rejected": 0
+        },
+        "person_enter:client": {
+          "candidates": 15,
+          "positive": 11,
+          "scored": 15,
+          "omitted": 0,
+          "auc": 0.34090909090909094,
+          "brier": 0.28593213667487666,
+          "threshold_assessed": 15,
+          "positive_kept": 9,
+          "positive_rejected": 2,
+          "negative_rejected": 0
+        },
+        "person_enter:visitor": {
+          "candidates": 3,
+          "positive": 2,
+          "scored": 3,
+          "omitted": 0,
+          "auc": 0.0,
+          "brier": 0.5826882323606025,
+          "threshold_assessed": 3,
+          "positive_kept": 1,
+          "positive_rejected": 1,
+          "negative_rejected": 0
+        },
+        "person_leave:cashier": {
+          "candidates": 6,
+          "positive": 3,
+          "scored": 6,
+          "omitted": 0,
+          "auc": 0.4444444444444445,
+          "brier": 0.32841252489862793,
+          "threshold_assessed": 6,
+          "positive_kept": 3,
+          "positive_rejected": 0,
+          "negative_rejected": 1
+        },
+        "person_leave:client": {
+          "candidates": 7,
+          "positive": 2,
+          "scored": 7,
+          "omitted": 0,
+          "auc": 0.7,
+          "brier": 0.23430239322289964,
+          "threshold_assessed": 7,
+          "positive_kept": 2,
+          "positive_rejected": 0,
+          "negative_rejected": 3
+        },
+        "put:banknotes>cash_machine": {
+          "candidates": 6,
+          "positive": 1,
+          "scored": 6,
+          "omitted": 0,
+          "auc": 0.8,
+          "brier": 0.25277487344162514,
+          "threshold_assessed": 1,
+          "positive_kept": 0,
+          "positive_rejected": 0,
+          "negative_rejected": 0
+        },
+        "safe_close": {
+          "candidates": 15,
+          "positive": 12,
+          "scored": 15,
+          "omitted": 0,
+          "auc": 0.6944444444444444,
+          "brier": 0.14253927507197142,
+          "threshold_assessed": 15,
+          "positive_kept": 10,
+          "positive_rejected": 2,
+          "negative_rejected": 2
+        },
+        "safe_open": {
+          "candidates": 9,
+          "positive": 9,
+          "scored": 9,
+          "omitted": 0,
+          "auc": null,
+          "brier": 0.05558266127217607,
+          "threshold_assessed": 9,
+          "positive_kept": 8,
+          "positive_rejected": 1,
+          "negative_rejected": 0
+        },
+        "screen_lock": {
+          "candidates": 3,
+          "positive": 2,
+          "scored": 3,
+          "omitted": 0,
+          "auc": 0.0,
+          "brier": 0.7216070720574633,
+          "threshold_assessed": 3,
+          "positive_kept": 2,
+          "positive_rejected": 0,
+          "negative_rejected": 0
+        },
+        "sort_banknotes": {
+          "candidates": 6,
+          "positive": 6,
+          "scored": 6,
+          "omitted": 0,
+          "auc": null,
+          "brier": 0.04378910869745104,
+          "threshold_assessed": 6,
+          "positive_kept": 5,
+          "positive_rejected": 1,
+          "negative_rejected": 0
+        },
+        "take:banknotes>cash_machine": {
+          "candidates": 6,
+          "positive": 0,
+          "scored": 6,
+          "omitted": 0,
+          "auc": null,
+          "brier": 0.053861893428624685,
+          "threshold_assessed": 0,
+          "positive_kept": 0,
+          "positive_rejected": 0,
+          "negative_rejected": 0
+        },
+        "use_laptop": {
+          "candidates": 8,
+          "positive": 4,
+          "scored": 8,
+          "omitted": 0,
+          "auc": 0.8125,
+          "brier": 0.2153750691671059,
+          "threshold_assessed": 8,
+          "positive_kept": 3,
+          "positive_rejected": 1,
+          "negative_rejected": 3
+        }
+      }
+    }
+  },
+  "l1_pose_timing": {
+    "videos": 40,
+    "total_sec": 280.4,
+    "max_sec": 34.3,
+    "slowest_video": "X-14",
+    "gate_max_sec": 100,
+    "within_time_gate": true
+  },
+  "baseline_commit": "2cea4c68d14c3915f755c9fcec9e379e7fe1eccf",
+  "validation_runner_sha256": "5130d292f6e36646d5e1b0d92ab0f6cc08822068b6c1417a161405e9d12705d9",
+  "weights_sha256": "432671dfa2c7ed730f24085e0998ce51c48038a8cb6a7daffd466ce928edd274",
+  "runtime": {
+    "image": "datathon-cv-continuation:d0666ebadf83",
+    "source": "mounted code_commit",
+    "cpu_limit": 8,
+    "omp_num_threads": 8,
+    "mkl_num_threads": 8
+  },
+  "parity": {
+    "videos": 40,
+    "equal": true,
+    "compared": [
+      "roles",
+      "segments",
+      "actions",
+      "events"
+    ],
+    "excluded_action_metadata": [
+      "p_learned",
+      "t_seen"
+    ]
+  },
+  "decision": "Merge code with ECL and POSE disabled; do not promote an experimental model. ECL loses X-30.",
+  "configuration": {
+    "tracker": "bytetrack",
+    "step_classifier": "hybrid",
+    "step_model": "/data/runs/sop/steps_yolo.joblib",
+    "step_model_sha256": "cad575018ab30efd0ee8d1c9fe8102d267128a087d5da5f68c29baca78c1e844",
+    "sample_fps": "4",
+    "pose": "from input cache"
+  }
+}
