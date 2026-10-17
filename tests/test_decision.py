@@ -81,6 +81,22 @@ def test_sop_checker_missing_count_on_machine():
             {"t": 12, "action": "person_enter", "actor": "client"}]
     found = sequence_check(acts, spec)
     assert [(f["kind"], f["step"]["target"], f["cycle"]) for f in found] == [("missing", "cash_machine", 1)]
+    # событие называет шаг и охватывает отрезок обслуживания, где шаг ожидался (второй клиент — с 12 с до конца)
+    from cv.pipeline import sequence_events
+
+    acts.append({"t": 20, "action": "person_leave", "actor": "client"})
+    [e] = sequence_events([acts], spec)
+    assert e["title"] == "Пропущен шаг: кассир кладёт купюры в счётную машинку"
+    assert (e["t_start"], e["t_end"], e["status"]) == (12, 20, "warning")
+    assert "Обслуживание клиента 2 (12.0–20.0 с)" in e["message"] and "пересчитываются" in e["message"]
+
+
+def test_rule_explanations():
+    # пояснения правил для описаний событий (worker.describe): из scenarios.yaml с основаниями из норм
+    from cv.pipeline import why_by_title
+
+    why = why_by_title(load_spec())
+    assert "основание (условно)" in why["Компьютер с активной сессией без присмотра"]
 
 
 def test_fsm_matches_legacy_rules_on_synthetic_segments():

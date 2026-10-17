@@ -9,8 +9,9 @@ import yaml
 from PIL import Image, ImageDraw
 
 from cv.detectors import REFERENCE_DIR, Detection
-from data_prepare.sop_fsm import check_instance_fsm, check_video_fsm
+from data_prepare.reference_actions import step_matches
 from data_prepare.sop_events import build_events
+from data_prepare.sop_fsm import check_instance_fsm, check_video_fsm
 
 ACTOR_RU = {"cashier": "Кассир", "client": "Клиент", "collector": "Инкассатор", "visitor": "Второй посетитель"}
 ACTION_RU = {
@@ -26,7 +27,11 @@ OBJECT_RU = {"banknotes": "купюры", "id_card": "удостоверение
              "document": "документ", "foreign_object": "личные вещи", "computer": "компьютер"}
 TARGET_RU = {"cash_machine": "в счётную машинку", "safe": "в сейф", "safe_top": "на сейф", "desk": "на кассовый стол",
              "client": "клиенту", "cashier": "кассиру", "bag": "из сумки", "door": "к двери"}
-WITH_OBJECT = {"give", "put", "take", "inspect"}  # у остальных глаголов объект уже в тексте действия
+WITH_OBJECT = {"give", "put", "take", "inspect"}
+STEP_WHY = {  # зачем обязательный шаг цикла обслуживания — для описания SOP-чекера
+    ("put", "cash_machine"): "принятые деньги пересчитываются на счётной машинке при клиенте",
+    ("person_enter", None): "цикл обслуживания начинается с прихода клиента",
+}  # у остальных глаголов объект уже в тексте действия
 HIDDEN_ON_EVIDENCE = {"ignore_zone", "reflection", "door"}
 
 
@@ -54,21 +59,36 @@ def build_video_events(det: Detection, spec: dict, video_name: str = "video") ->
 
 def sequence_events(instance_actions: list[list[dict]], spec: dict) -> list[dict]:
     """Пропущенные и переставленные обязательные шаги по циклам обслуживания — SOP-чекер NVIDIA
-    (decision.sop.sequence_check). Предупреждения для интерфейса, на вердикт не влияют."""
-    from decision.sop import sequence_check
+    (decision.sop.sequence_check). Предупреждения для интерфейса, на вердикт не влияют. Название говорит, какой шаг,
+    интервал события — отрезок обслуживания, в котором шаг ожидался."""
+    from decision.sop import core_steps, sequence_check
 
+    actions = sorted((a for acts in instance_actions for a in acts), key=lambda a: a["t"])
+    core = core_steps(spec)
+    starts = [a["t"] for a in actions if core and step_matches(core[0], a)]  # начало каждого цикла обслуживания
+    end_of_video = actions[-1]["t"] if actions else 0.0
     out = []
-    for f in sequence_check([a for actions in instance_actions for a in actions], spec):
-        step = f["step"]
+    for f in sequence_check(actions, spec):
+        step, cycle = f["step"], f["cycle"]
         what = " ".join(x for x in (ACTOR_RU.get(step.get("actor") or "", ""), ACTION_RU.get(step["action"], step["action"]),
                                     OBJECT_RU.get(step.get("object") or "", "") if step["action"] in WITH_OBJECT else "",
                                     TARGET_RU.get(step.get("target") or "", "")) if x)
-        title = "Пропущен шаг процедуры" if f["kind"] == "missing" else "Шаг процедуры не по порядку"
-        out.append({"t_start": f["t"], "t_end": f["t"], "event": "sop_step", "actor": step.get("actor"),
+        what = what[:1].lower() + what[1:]
+        start = starts[cycle] if 0 <= cycle < len(starts) else f["t"]
+        end = starts[cycle + 1] if cycle + 1 < len(starts) else max(end_of_video, f["t"])
+        why = STEP_WHY.get((step["action"], step.get("target")), "шаг обязателен в каждом цикле обслуживания")
+        if f["kind"] == "missing":
+            title = f"Пропущен шаг: {what}"
+            message = (f"Обслуживание клиента {cycle + 1} ({start:.1f}–{end:.1f} с): не видно, что {what}. По процедуре "
+                       f"{why}. Проверьте по записи: шаг мог быть, но его закрыли руки или люди в кадре.")
+        else:
+            title = f"Не по порядку: {what}"
+            message = (f"Обслуживание клиента {cycle + 1} ({start:.1f}–{end:.1f} с): {what} — раньше, чем положено "
+                       f"по процедуре ({why}).")
+        out.append({"t_start": start, "t_end": end, "event": "sop_step", "actor": step.get("actor"),
                     "object": step.get("object"), "target": step.get("target"), "scenario": "client_service",
-                    "instance": f["cycle"], "step": None, "status": "warning", "title": title,
-                    "rules": ["nvidia_sop_checker"], "norm": None,
-                    "message": f"{title} в цикле обслуживания {f['cycle'] + 1}: {what}."})
+                    "instance": cycle, "step": None, "status": "warning", "title": title,
+                    "rules": ["nvidia_sop_checker", f"sop:{f['kind']}"], "norm": None, "message": message})
     return sorted(out, key=lambda e: e["t_start"])
 
 
