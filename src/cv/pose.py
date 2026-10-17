@@ -19,8 +19,8 @@ import numpy as np
 from cv.detectors import DATA_DIR, iter_frames
 
 MODEL = os.environ.get("POSE_MODEL", "/models/pose_landmarker_heavy.task")
+CACHE_TAG = os.environ.get("CACHE_TAG") or None  # кэш L1: l1_yolo[@<метка>].json; позы считаются на его частоте
 MIN_CONF = 0.5  # бокс person из L1
-FPS = 2.0  # кадров в секунду на позы (кэш L1 — 4)
 MARGIN = 0.15  # поле вокруг бокса: руки и локти часто выходят за рамку детектора
 CROP_H = 384  # кроп растягивается до этой высоты — модель рассчитана на крупного человека
 VISIBLE = 0.5
@@ -89,13 +89,13 @@ def sheet(tiles: list[np.ndarray]) -> np.ndarray:
 
 
 def run_video(model, name: str, sha: str) -> dict:
-    cache = json.loads((DATA_DIR / "features" / sha / "l1_yolo.json").read_text())
+    cache = json.loads((DATA_DIR / "features" / sha / f"l1_yolo{'@' + CACHE_TAG if CACHE_TAG else ''}.json").read_text())
     by_t: dict[float, list[dict]] = {}
     for b in cache["boxes"]:
         if b["cls"] == "person" and (b.get("conf") or 0) >= MIN_CONF:
             by_t.setdefault(round(b["t"], 3), []).append(b)
     items, tiles, took = [], [], []
-    for t, frame in iter_frames(DATA_DIR / "videos" / f"{name}.mov", FPS):
+    for t, frame in iter_frames(DATA_DIR / "videos" / f"{name}.mov", cache["fps"]):
         for b in by_t.get(round(t, 3), []):
             crop, origin = crop_box(frame, b["bbox"])
             started = time.time()
@@ -103,12 +103,13 @@ def run_video(model, name: str, sha: str) -> dict:
             took.append(time.time() - started)
             items.append({"t": round(t, 3), "bbox": b["bbox"], "conf": b["conf"], "landmarks": pts})
             tiles.append(draw(crop, pts, origin, f"{t:.1f}s {'ok' if pts else 'NO'}"))
-    out = DATA_DIR / "features" / sha / "pose_mp.json"
-    out.write_text(json.dumps({"video": name, "model": Path(MODEL).name, "fps": FPS, "poses": items}))
+    out = DATA_DIR / "features" / sha / f"pose_{Path(MODEL).stem.rsplit('_', 1)[-1]}{'@' + CACHE_TAG if CACHE_TAG else ''}.json"
+    out.write_text(json.dumps({"video": name, "model": Path(MODEL).name, "fps": cache["fps"], "poses": items}))
     if tiles:
         pick = np.linspace(0, len(tiles) - 1, min(SHEET_MAX, len(tiles))).round().astype(int)
         (DATA_DIR / "runs" / "pose").mkdir(parents=True, exist_ok=True)
-        cv2.imwrite(str(DATA_DIR / "runs" / "pose" / f"{name}.jpg"), sheet([tiles[i] for i in pick]))
+        cv2.imwrite(str(DATA_DIR / "runs" / "pose" / f"{name}_{Path(MODEL).stem.rsplit('_', 1)[-1]}.jpg"),
+                    sheet([tiles[i] for i in pick]))
     found = [x for x in items if x["landmarks"]]
     wrists = [x for x in found if all(x["landmarks"][i][2] >= VISIBLE for i in WRISTS)]
     shoulders = [x for x in found if all(x["landmarks"][i][2] >= VISIBLE for i in SHOULDERS)]
@@ -130,7 +131,7 @@ def main() -> None:
     for name in args.videos:
         summary[name] = run_video(model, name, sha[name])
         print(name, summary[name], flush=True)
-    path = DATA_DIR / "runs" / "pose" / "summary.json"
+    path = DATA_DIR / "runs" / "pose" / f"summary_{Path(MODEL).stem.rsplit('_', 1)[-1]}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(summary, ensure_ascii=False, indent=1))
     print(f"→ {path}")
