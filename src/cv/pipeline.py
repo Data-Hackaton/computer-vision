@@ -20,7 +20,7 @@ ACTION_RU = {
     "open_bag": "вскрывает инкассаторскую сумку", "use_laptop": "работает за компьютером",
     "screen_lock": "блокирует экран", "paperwork": "оформляет бумаги", "phone_call": "говорит по телефону",
     "lights_off": "выключает свет", "split_bundle": "делит пачку купюр на две части",
-    "keep": "оставляет купюры у себя",
+    "keep": "оставляет купюры у себя", "safe_left_open": "оставляет сейф открытым",
 }
 OBJECT_RU = {"banknotes": "купюры", "id_card": "удостоверение", "bag": "сумку", "phone": "телефон",
              "document": "документ", "foreign_object": "личные вещи", "computer": "компьютер"}
@@ -48,7 +48,28 @@ def build_video_events(det: Detection, spec: dict, video_name: str = "video") ->
             h.update(instance=idx, scenario=name)
         instances.append((name, actions, steps))
     check_video(video_name, instance_actions, spec.get("video_invariants", []), [], hits)
-    return build_events(video_name, instances, hits)
+    events = build_events(video_name, instances, hits)
+    return events + sequence_events(instance_actions, spec)
+
+
+def sequence_events(instance_actions: list[list[dict]], spec: dict) -> list[dict]:
+    """Пропущенные и переставленные обязательные шаги по циклам обслуживания — SOP-чекер NVIDIA
+    (decision.sop.sequence_check). Предупреждения для интерфейса, на вердикт не влияют."""
+    from decision.sop import sequence_check
+
+    out = []
+    for f in sequence_check([a for actions in instance_actions for a in actions], spec):
+        step = f["step"]
+        what = " ".join(x for x in (ACTOR_RU.get(step.get("actor") or "", ""), ACTION_RU.get(step["action"], step["action"]),
+                                    OBJECT_RU.get(step.get("object") or "", "") if step["action"] in WITH_OBJECT else "",
+                                    TARGET_RU.get(step.get("target") or "", "")) if x)
+        title = "Пропущен шаг процедуры" if f["kind"] == "missing" else "Шаг процедуры не по порядку"
+        out.append({"t_start": f["t"], "t_end": f["t"], "event": "sop_step", "actor": step.get("actor"),
+                    "object": step.get("object"), "target": step.get("target"), "scenario": "client_service",
+                    "instance": f["cycle"], "step": None, "status": "warning", "title": title,
+                    "rules": ["nvidia_sop_checker"], "norm": None,
+                    "message": f"{title} в цикле обслуживания {f['cycle'] + 1}: {what}."})
+    return sorted(out, key=lambda e: e["t_start"])
 
 
 def why_by_title(spec: dict) -> dict[str, str]:

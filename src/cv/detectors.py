@@ -204,13 +204,18 @@ class FrameDetector(Detector):
         return out
 
     def run(self, video: Path, sha256: str) -> Detection:
-        from decision.steps import build_journal
+        from decision.steps import analyze, with_vlm
+        from decision.vlm import VLM_URL, Asker
 
         started = time.time()
         boxes = self.detect(video)
-        instances = build_journal(boxes, self.fps)
-        return Detection(self.name, boxes=boxes, instances=instances,
-                         note=f"{self.weights.name}, {self.fps:g} кадр/с, {time.time() - started:.0f} с")
+        res = analyze(boxes, self.fps)
+        note = f"{self.weights.name}, {self.fps:g} кадр/с"
+        if VLM_URL:  # спорные моменты — VLM (сервис vlm); недоступна — остаются правила
+            ask = Asker(video, res["zones"])
+            res = with_vlm(res, ask)
+            note += f", VLM: {ask.calls} вопросов" + (f" ({ask.log[-1]})" if ask.log and "ошибка" in ask.log[-1] else "")
+        return Detection(self.name, boxes=boxes, instances=res["instances"], note=f"{note}, {time.time() - started:.0f} с")
 
 
 class YoloDetector(FrameDetector):

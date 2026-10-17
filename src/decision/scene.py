@@ -12,7 +12,7 @@ from collections import defaultdict
 from cv.geometry import center_in, iou, median_box, overlap_share
 
 SIGNALS = ["cashier_present", "client_present", "visitors", "money_on_desk", "money_in_machine", "bundles_at_cashier",
-           "foreign_on_desk", "bag_on_desk", "phone_at_head", "screen_on"]
+           "foreign_on_desk", "bag_on_desk", "phone_at_head", "screen_on", "two_at_cashier"]
 # Экран «включён»: доля ярких пикселей в боксе ноутбука (computer.bright из L1). На датасете рабочий экран — 0,40–0,50,
 # заставка блокировки или обои — 0,22–0,29, закрытая крышка или выключенный свет — ниже 0,2.
 SCREEN_ON = 0.35
@@ -123,7 +123,7 @@ def scene_states(frames: list[tuple[float, list[dict]]], roles: dict[int, str], 
     def zone(cls):
         return median_box([b["bbox"] for _, boxes in frames for b in boxes if b["cls"] == cls])
 
-    table, machine = zone("table"), zone("cash_machine")
+    table, machine, safe = zone("table"), zone("cash_machine"), zone("safe")
     if table:  # столешница — верхние 55% бокса стола (ниже — тумба и кресло кассира), чуть шире по краям
         w, h = table[2] - table[0], table[3] - table[1]
         table = [table[0] - 0.05 * w, table[1] - 0.05 * h, table[2] + 0.05 * w, table[1] + 0.55 * h]
@@ -176,6 +176,11 @@ def scene_states(frames: list[tuple[float, list[dict]]], roles: dict[int, str], 
                 and (b["bbox"][1] + b["bbox"][3]) / 2 < c["bbox"][1] + 0.4 * (c["bbox"][3] - c["bbox"][1])
                 for c in cashiers) for b in boxes)),
             "screen_on": screen_prev,
+            # двое на месте кассира — второй трек держится у места кассира (посторонний за кассовым столом, X-30);
+            # на 19 чистых видео такого нет ни разу
+            "two_at_cashier": int(len(cashiers) >= 2),
+            # у сейфа кто-то стоит (человек перекрывает больше 30% бокса сейфа); не сигнал, а подсказка для VLM
+            "_at_safe": bool(safe) and any(overlap_share(safe, b["bbox"]) > 0.3 for b in people),
             # расстояние кассира до его места в ростах (None — кассира не видно); не сигнал, а подсказка для L2
             "_cashier_d": min((((c["bbox"][0] + c["bbox"][2]) / 2 - seat["x"]) ** 2
                                + (c["bbox"][3] - seat["y"]) ** 2) ** 0.5 / seat["h"] for c in cashiers)

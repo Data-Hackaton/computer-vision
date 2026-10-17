@@ -99,6 +99,168 @@ def dataset(detector: str):
     return data, fnames
 
 
+def step_class(a: dict) -> str:
+    """Класс шага для обучения: действие + участник (вход/уход) или предмет/место (остальное)."""
+    if a["action"] in ("person_enter", "person_leave"):
+        return f"{a['action']}:{a.get('actor')}"
+    if a["action"] in ("put", "take", "give"):
+        return f"{a['action']}:{a.get('object')}>{a.get('target')}"
+    return a["action"]
+
+
+def steps_dataset(detector: str, step_sec: float = 0.5, near_sec: float = 1.0):
+    """Окна по видео с журналом (actions.yaml + violations.yaml): метка — класс шага ближе near_sec, иначе «none»."""
+    import yaml
+
+    from cv.detectors import REFERENCE_DIR
+
+    journals = {**yaml.safe_load((REFERENCE_DIR / "actions.yaml").read_text()),
+                **yaml.safe_load((REFERENCE_DIR / "violations.yaml").read_text())}
+    with (DATA_DIR / "labels.csv").open() as f:
+        sha = {r["video"]: r["sha256"] for r in csv.DictReader(f)}
+    global STEP_SEC
+    keep_step, STEP_SEC = STEP_SEC, step_sec
+    data = {}
+    for name, entry in journals.items():
+        path = cache_path(sha[name], detector)
+        if not path.exists():
+            continue
+        cache = json.loads(path.read_text())
+        ts, x, names = frame_features(cache["boxes"], cache["fps"])
+        centers, feats, fnames = windows(ts, x, names)
+        acts = [a for i in entry["instances"] for a in i["actions"]]
+        y = []
+        for c in centers:
+            near = [a for a in acts if abs(a["t"] - c) <= near_sec]
+            y.append(step_class(min(near, key=lambda a: abs(a["t"] - c))) if near else "none")
+        data[name] = {"centers": centers, "x": feats, "y": np.array(y),
+                      "ref": [step_class(a) for a in sorted(acts, key=lambda a: a["t"])]}
+    STEP_SEC = keep_step
+    return data, fnames
+
+
+def peaks(centers: np.ndarray, proba: np.ndarray, classes: list[str], thr: float, nms_sec: float = 2.0) -> list[tuple]:
+    """Пики вероятности по классам (кроме «none») с подавлением соседних → [(t, класс)] по времени."""
+    out = []
+    for k, cls in enumerate(classes):
+        if cls == "none":
+            continue
+        p = proba[:, k]
+        taken = []
+        for i in np.argsort(-p):
+            if p[i] < thr:
+                break
+            if all(abs(centers[i] - t) > nms_sec for t in taken):
+                taken.append(centers[i])
+        out += [(t, cls) for t in taken]
+    return sorted(out)
+
+
+# Шаги, которых правила L2 не видят, а обученный классификатор находит (LOO на 24 видео с журналом, 17.10):
+# сейф, удостоверение, передача денег клиентом, раскладка по стопкам
+HYBRID_CLASSES = {"safe_open", "safe_close", "give:id_card>cashier", "inspect", "give:banknotes>cashier",
+                  "sort_banknotes"}
+
+
+HYBRID_THRESHOLD = 0.5  # порог пика: на LOO гибрид 0,23 против 0,19 у правил
+
+
+def class_action(cls: str) -> dict:
+    """Класс шага → действие журнала."""
+    if cls == "give:id_card>cashier":
+        return {"action": "give", "actor": "client", "object": "id_card", "target": "cashier"}
+    if cls == "give:banknotes>cashier":
+        return {"action": "give", "actor": "client", "object": "banknotes", "target": "cashier"}
+    if cls == "inspect":
+        return {"action": "inspect", "actor": "cashier", "object": "id_card"}
+    return {"action": cls, "actor": "cashier"}
+
+
+def steps_model_path(detector: str):
+    return DATA_DIR / "runs" / "sop" / f"steps_{detector}.joblib"
+
+
+def learned_actions(boxes: list[dict], fps: float, model_path) -> list[dict]:
+    """Действия по шагам HYBRID_CLASSES от обученного классификатора (STEP_CLASSIFIER=hybrid)."""
+    import joblib
+
+    saved = joblib.load(model_path)
+    ts, x, names = frame_features(boxes, fps)
+    global STEP_SEC
+    keep_step, STEP_SEC = STEP_SEC, saved.get("step_sec", 0.5)
+    try:
+        centers, feats, _ = windows(ts, x, names)
+    finally:
+        STEP_SEC = keep_step
+    if not len(feats):
+        return []
+    proba = saved["model"].predict_proba(feats)
+    out = []
+    for t, cls in peaks(centers, proba, list(saved["model"].classes_), saved["threshold"]):
+        if cls in saved["classes"]:
+            out.append({"t": round(float(t), 2), **class_action(cls), "source": "learned"})
+    return out
+
+
+def steps_fit(detector: str) -> None:
+    import joblib
+
+    data, _ = steps_dataset(detector)
+    clf = model().fit(np.concatenate([d["x"] for d in data.values()]), np.concatenate([d["y"] for d in data.values()]))
+    out = steps_model_path(detector)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    joblib.dump({"model": clf, "classes": sorted(HYBRID_CLASSES), "threshold": HYBRID_THRESHOLD, "step_sec": 0.5}, out)
+    print(f"→ {out}: видео {len(data)}, окон {sum(len(d['y']) for d in data.values())}")
+
+
+def steps_main(detector: str) -> None:
+    """LOO: seq_accuracy обученного классификатора шагов против правил L2 на тех же классах."""
+    from decision.sop import seq_accuracy
+    from decision.steps import analyze
+
+    data, _ = steps_dataset(detector)
+    videos = sorted(data, key=lambda v: int(v[2:]))
+    learned_cls = sorted({c for v in videos for c in data[v]["y"]} - {"none"})
+    with (DATA_DIR / "labels.csv").open() as f:
+        sha = {r["video"]: r["sha256"] for r in csv.DictReader(f)}
+    probs = {}
+    for v in videos:
+        train = [w for w in videos if w != v]
+        clf = model().fit(np.concatenate([data[w]["x"] for w in train]), np.concatenate([data[w]["y"] for w in train]))
+        probs[v] = (clf.predict_proba(data[v]["x"]), list(clf.classes_))
+    rules_seq, rules_tc = {}, {}
+    for v in videos:
+        cache = json.loads(cache_path(sha[v], detector).read_text())
+        acts = analyze(cache["boxes"], cache["fps"])["actions"]
+        rules_seq[v] = [step_class(a) for a in acts]
+        rules_tc[v] = [(a["t"], step_class(a)) for a in acts]
+    for thr in (0.3, 0.4, 0.5, 0.6):
+        acc_h = []
+        for v in videos:
+            proba, classes = probs[v]
+            ref = [c for c in data[v]["ref"] if c in learned_cls]
+            rules_t = [(a_t, c) for a_t, c in rules_tc[v] if c in learned_cls]
+            hyb = sorted(rules_t + [(t, c) for t, c in peaks(data[v]["centers"], proba, classes, thr) if c in HYBRID_CLASSES])
+            acc_h.append(seq_accuracy([c for _, c in hyb], ref))
+        print(f"порог {thr:.1f}: гибрид (правила + модель по {len(HYBRID_CLASSES)} шагам) {np.mean(acc_h):.2f}")
+    for thr in (0.3, 0.4, 0.5, 0.6):
+        acc_l, acc_r = [], []
+        per_cls = defaultdict(lambda: [0, 0, 0])  # верно найдено, предсказано, в эталоне
+        for v in videos:
+            proba, classes = probs[v]
+            pred = [c for _, c in peaks(data[v]["centers"], proba, classes, thr)]
+            ref = [c for c in data[v]["ref"] if c in learned_cls]
+            acc_l.append(seq_accuracy(pred, ref))
+            acc_r.append(seq_accuracy([c for c in rules_seq[v] if c in learned_cls], ref))
+            for c in learned_cls:
+                n_p, n_r = pred.count(c), ref.count(c)
+                per_cls[c][0] += min(n_p, n_r); per_cls[c][1] += n_p; per_cls[c][2] += n_r
+        print(f"порог {thr:.1f}: seq_accuracy обученный {np.mean(acc_l):.2f}, правила {np.mean(acc_r):.2f}")
+        if thr == 0.5:
+            for c, (hit, n_p, n_r) in sorted(per_cls.items(), key=lambda kv: -kv[1][2]):
+                print(f"    {c:<40} эталон {n_r:3d}  предсказано {n_p:3d}  совпало {hit:3d}")
+
+
 def model():
     from sklearn.ensemble import HistGradientBoostingClassifier
 
@@ -110,8 +272,13 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--detector", required=True, choices=["yolo", "rfdetr"])
     ap.add_argument("--fit", action="store_true")
+    ap.add_argument("--target", choices=["violations", "steps"], default="violations",
+                    help="violations — момент нарушения по labels.csv; steps — шаги по эталонному журналу (аналог DDM)")
     ap.add_argument("--threshold", type=float, default=0.5)
     args = ap.parse_args()
+    if args.target == "steps":
+        steps_fit(args.detector) if args.fit else steps_main(args.detector)
+        return
     data, fnames = dataset(args.detector)
     videos = sorted(data, key=lambda v: int(v[2:]))
 

@@ -10,7 +10,9 @@
 
 import os
 import statistics
+from pathlib import Path
 
+from cv.geometry import median_box
 from decision.scene import SIGNALS, assign_roles, frames_of, scene_states, track_people
 
 SMOOTH_SEC = 1.0  # threshold: окно сглаживания большинством
@@ -21,7 +23,7 @@ MAX_LENGTH_SEC = 10.0  # max_length_sec: длинный отрезок реже�
 # Клиент «ушёл» — если его нет дольше 2 с (трек рвётся в дверях); второй посетитель — дольше 3 с.
 LEAVE_SEAT_D = 0.3  # кассир «у места» — ближе 0,3 роста к своему месту
 HOLD_SEC = {"cashier_present": 3.0, "client_present": 2.0, "visitors": 3.0, "foreign_on_desk": 3.0,
-            "phone_at_head": 2.0, "bag_on_desk": 1.5, "screen_on": 1.5}
+            "phone_at_head": 2.0, "bag_on_desk": 1.5, "screen_on": 1.5, "two_at_cashier": 2.0}
 
 
 def smooth(values: list[int], win: int) -> list[int]:
@@ -99,7 +101,8 @@ class RulesClassifier:
             out.append(act(t, "person_enter", "client"))
         if p["client_present"] and not c["client_present"]:
             out.append(act(t, "person_leave", "client"))
-        if c["visitors"] >= 2 and p["visitors"] < 2 and p["client_present"]:
+        if (c["visitors"] >= 2 and p["visitors"] < 2 and p["client_present"]) or (c["two_at_cashier"]
+                                                                               and not p["two_at_cashier"]):
             out.append(act(t, "person_enter", "visitor"))
         if p["cashier_present"] and not c["cashier_present"]:
             out.append(act(t, "person_leave", "cashier"))
@@ -123,9 +126,20 @@ class RulesClassifier:
 
 def get_classifier():
     kind = os.environ.get("STEP_CLASSIFIER", "rules")
-    if kind != "rules":
-        raise ValueError(f"неизвестный классификатор шагов: {kind} (есть: rules)")
+    if kind not in ("rules", "hybrid"):
+        raise ValueError(f"неизвестный классификатор шагов: {kind} (есть: rules, hybrid)")
     return RulesClassifier()
+
+
+def step_model() -> "Path | None":
+    """STEP_CLASSIFIER=hybrid: правила + обученный классификатор шагов (decision.learned, аналог DDM у NVIDIA)
+    для шагов, которых правила не видят. Модель — STEP_MODEL или data/runs/sop/steps_<DETECTOR>.joblib."""
+    if os.environ.get("STEP_CLASSIFIER", "rules") != "hybrid":
+        return None
+    from decision.learned import steps_model_path
+
+    path = Path(os.environ.get("STEP_MODEL") or steps_model_path(os.environ.get("DETECTOR", "yolo")))
+    return path if path.exists() else None
 
 
 def to_instances(actions: list[dict]) -> list[dict]:
@@ -170,6 +184,10 @@ def analyze(boxes: list[dict], fps: float) -> dict:
     actions = clf.initial(segs[0]) if segs else []
     for prev, cur in zip(segs, segs[1:]):
         actions += clf.classify(prev, cur)
+    if (model_path := step_model()) is not None:
+        from decision.learned import learned_actions
+
+        actions += learned_actions(boxes, fps, model_path)
     # уход кассира — с момента, когда он последний раз был у своего места (встал и пошёл), а не когда пропал из
     # кадра; но не раньше его последнего действия со столом (положил деньги и ушёл — деньги остались на столе)
     for a in actions:
@@ -179,8 +197,19 @@ def analyze(boxes: list[dict], fps: float) -> dict:
             last_desk = [b["t"] for b in actions if b.get("target") == "desk" and b["t"] < a["t"]]
             if at_seat:
                 a["t"] = round(max([at_seat[-1]] + [t + 0.1 for t in last_desk]), 2)
-    return {"roles": roles, "segments": segs, "actions": [a for a in actions if not a["action"].startswith("_")],
-            "instances": to_instances(actions)}
+    zones = {c: median_box([b["bbox"] for _, bs in frames for b in bs if b["cls"] == c])
+             for c in ("table", "safe", "cash_machine")}
+    return {"roles": roles, "segments": segs, "states": states, "zones": zones, "raw_actions": actions,
+            "actions": [a for a in actions if not a["action"].startswith("_")], "instances": to_instances(actions)}
+
+
+def with_vlm(res: dict, ask) -> dict:
+    """L2 + ответы VLM в спорных моментах (decision.vlm): новые действия → новые экземпляры."""
+    from decision.vlm import refine
+
+    raw = refine(res, ask)
+    return {**res, "raw_actions": raw, "actions": [a for a in raw if not a["action"].startswith("_")],
+            "instances": to_instances(raw)}
 
 
 def build_journal(boxes: list[dict], fps: float) -> list[dict]:

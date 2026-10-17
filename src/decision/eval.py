@@ -17,7 +17,7 @@ from cv.detectors import DATA_DIR, REFERENCE_DIR, Detection
 from cv.infer import cache_path
 from cv.pipeline import build_video_events, load_spec
 from decision.sop import seq_accuracy
-from decision.steps import analyze
+from decision.steps import analyze, with_vlm
 
 CATCH_WINDOW_SEC = 3  # как в data_prepare.reference_actions
 # Кадры этих видео — в train детектора (r1 train, r1b), журнал X-1 — образец для правил
@@ -45,6 +45,7 @@ def main() -> None:
     ap.add_argument("--detector", required=True, choices=["yolo", "rfdetr"])
     ap.add_argument("--videos", nargs="*")
     ap.add_argument("--verbose", action="store_true", help="печатать действия L2 по каждому видео")
+    ap.add_argument("--vlm", action="store_true", help="спорные моменты — VLM (VLM_URL, ответы кэшируются в data/features)")
     args = ap.parse_args()
 
     with (DATA_DIR / "labels.csv").open() as f:
@@ -69,6 +70,12 @@ def main() -> None:
             continue
         cache = json.loads(path.read_text())
         res = analyze(cache["boxes"], cache["fps"])
+        if args.vlm:
+            from decision.vlm import VLM_MODEL, Asker
+
+            ask = Asker(DATA_DIR / "videos" / f"{name}.mov", res["zones"],
+                        cache_file=path.parent / f"vlm_{args.detector}_{VLM_MODEL}.json", max_calls=50)
+            res = with_vlm(res, ask)
         events = build_video_events(Detection(args.detector, instances=res["instances"]), spec, name)
         viol = [e for e in events if e["status"] == "violation"]
         warn = [e for e in events if e["status"] == "warning"]
@@ -112,7 +119,7 @@ def main() -> None:
         print(f"{group:>6}: видео {len(part)}, точность вердикта {(tp + tn) / len(part):.2f} "
               f"(TP {tp}, FP {fp}, FN {fn}, TN {tn}), таймкод ±{CATCH_WINDOW_SEC} с: {caught}/{tp + fn}"
               + (f", seq_accuracy {sum(seqs) / len(seqs):.2f}" if seqs else ""))
-    out = DATA_DIR / "runs" / "eval" / f"sop_{args.detector}.json"
+    out = DATA_DIR / "runs" / "eval" / f"sop_{args.detector}{'_vlm' if args.vlm else ''}.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(report, ensure_ascii=False, indent=1))
     print(f"→ {out}")

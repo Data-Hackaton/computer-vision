@@ -61,13 +61,26 @@ def test_cashier_leaves_money_on_desk():
     res, ev = events(video(30, client_at=[], notes_at=[(3, 30)], cashier_until=20))
     assert [i["scenario"] for i in res["instances"]][-1] == "leave_workplace"
     viol = [e for e in ev if e["status"] == "violation"]
-    assert [e["title"] for e in viol] == ["Наличные на столе при уходе кассира"]
+    assert [e["title"] for e in viol] == ["Ценности на столе при уходе кассира"]
 
 
 def test_new_instance_per_client():
     actions = [{"t": 1, "action": "person_enter", "actor": "client"}, {"t": 5, "action": "person_leave", "actor": "client"},
                {"t": 9, "action": "person_enter", "actor": "client"}]
     assert [i["scenario"] for i in to_instances(actions)] == ["client_service", "client_service"]
+
+
+def test_sop_checker_missing_count_on_machine():
+    # SOP-чекер NVIDIA на ядре эталона «пришёл клиент → деньги в машинку»: во втором цикле пересчёта нет
+    from decision.sop import core_steps, sequence_check
+
+    spec = load_spec()
+    assert [(s["action"], s.get("target")) for s in core_steps(spec)] == [("person_enter", None), ("put", "cash_machine")]
+    acts = [{"t": 1, "action": "person_enter", "actor": "client"},
+            {"t": 5, "action": "put", "actor": "cashier", "object": "banknotes", "target": "cash_machine"},
+            {"t": 12, "action": "person_enter", "actor": "client"}]
+    found = sequence_check(acts, spec)
+    assert [(f["kind"], f["step"]["target"], f["cycle"]) for f in found] == [("missing", "cash_machine", 1)]
 
 
 if __name__ == "__main__":
