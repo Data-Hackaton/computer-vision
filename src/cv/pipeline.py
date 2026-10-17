@@ -54,7 +54,20 @@ def build_video_events(det: Detection, spec: dict, video_name: str = "video") ->
         instances.append((name, actions, steps))
     check_video_fsm(video_name, instance_actions, spec.get("video_invariants", []), [], hits)
     events = build_events(video_name, instances, hits)
+    p_by_t = {(a["t"], a["action"]): a.get("p") for acts in instance_actions for a in acts}
+    for e in events:
+        uncertain(e, p_by_t.get((e["t_start"], e["event"])))
     return events + sequence_events(instance_actions, spec)
+
+
+def uncertain(e: dict, p: float | None) -> None:
+    """Нарушение по действию, которому ECL (decision.evidence) не верит (certain: False), — предупреждение: детекция
+    могла ошибиться, человек проверит по записи. Как шаг такое действие по-прежнему засчитано (L3 его видит)."""
+    if e.get("certain", True) or e["status"] != "violation":
+        return
+    e["status"] = "warning"
+    note = f"Модель не уверена в самом действии (оценка {p:.2f})" if p is not None else "Модель не уверена в самом действии"
+    e["message"] = f"{e['message']} {note} — проверьте по записи." if e.get("message") else f"{note} — проверьте по записи."
 
 
 def sequence_events(instance_actions: list[list[dict]], spec: dict) -> list[dict]:

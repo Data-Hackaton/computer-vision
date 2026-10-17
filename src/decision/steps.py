@@ -253,11 +253,19 @@ def analyze(boxes: list[dict], fps: float) -> dict:
                        and st["_cashier_d"] < LEAVE_SEAT_D]
             last_desk = [b["t"] for b in actions if b.get("target") == "desk" and b["t"] < a["t"]]
             if at_seat:
+                a["t_seen"] = a["t"]  # когда пропал из кадра — для сверки с журналом (decision.evidence)
                 a["t"] = round(max([at_seat[-1]] + [t + 0.1 for t in last_desk]), 2)
     zones = {c: median_box([b["bbox"] for _, bs in frames for b in bs if b["cls"] == c])
              for c in ("table", "safe", "cash_machine")}
+    # ECL (decision.evidence): достоверность каждого действия до правил L3; выключен — действия как есть
+    from decision import evidence  # decision.evidence → decision.learned импортирует этот модуль
+
+    ctx = evidence.context(frames, states, fps, zones, actions, states[-1]["t"] if states else 0.0)
+    if evidence.enabled():
+        evidence.apply([a for a in actions if not a["action"].startswith("_")], ctx)
     return {"roles": roles, "segments": segs, "states": states, "zones": zones, "raw_actions": actions,
-            "actions": [a for a in actions if not a["action"].startswith("_")], "instances": instances_of(actions)}
+            "actions": [a for a in actions if not a["action"].startswith("_")], "instances": instances_of(actions),
+            "ecl_context": ctx}
 
 
 def with_vlm(res: dict, ask) -> dict:

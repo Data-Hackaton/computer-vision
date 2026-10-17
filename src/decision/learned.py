@@ -195,10 +195,12 @@ def learned_actions(boxes: list[dict], fps: float, model_path) -> list[dict]:
     if not len(feats):
         return []
     proba = saved["model"].predict_proba(feats)
+    classes = list(saved["model"].classes_)
     out = []
-    for t, cls in peaks(centers, proba, list(saved["model"].classes_), saved["threshold"]):
+    for t, cls in peaks(centers, proba, classes, saved["threshold"]):
         if cls in saved["classes"]:
-            out.append({"t": round(float(t), 2), **class_action(cls), "source": "learned"})
+            p = float(proba[int(np.argmin(np.abs(centers - t))), classes.index(cls)])  # вероятность пика — признак ECL
+            out.append({"t": round(float(t), 2), **class_action(cls), "source": "learned", "p_learned": round(p, 3)})
     return out
 
 

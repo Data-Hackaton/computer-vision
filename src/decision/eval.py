@@ -85,6 +85,7 @@ def main() -> None:
             print(f"{name:>5}: нет кэша L1 ({path})")
             continue
         cache = json.loads(path.read_text())
+        os.environ["ECL_VIDEO"] = name  # ECL: на видео с журналом — модель, обученная без него (LOO)
         res = analyze(cache["boxes"], cache["fps"])
         if args.vlm:
             from decision.vlm import VLM_MODEL, Asker
