@@ -177,9 +177,18 @@ def to_instances(actions: list[dict]) -> list[dict]:
 
 
 def analyze(boxes: list[dict], fps: float) -> dict:
-    """Боксы L1 → треки и роли (в боксах), отрезки, действия, экземпляры."""
+    """Боксы L1 → треки и роли (в боксах), отрезки, действия, экземпляры.
+
+    Слабые боксы людей (attributes.low, DETECTOR_LOW_CONF) только продлевают треки: продлившие остаются в boxes,
+    остальные удаляются из списка на месте — ни в L2, ни в боксы задачи они не попадают."""
+    low = [b for b in boxes if b.get("attributes", {}).get("low")]
+    if low:
+        boxes[:] = [b for b in boxes if not b.get("attributes", {}).get("low")]
     frames = frames_of(boxes)
-    track_people(frames, fps)
+    track_people(frames, fps, low=low)
+    if low:
+        boxes.extend(b for b in low if "track_id" in b)
+        frames = frames_of(boxes)
     roles, seat = assign_roles(frames, fps)
     states = scene_states(frames, roles, seat)
     segs = segments(states, fps)

@@ -9,7 +9,8 @@ DETECTOR_WEIGHTS — веса (по умолчанию лучший прогон
 DETECTOR_CONF — порог уверенности, DETECTOR_DEVICE — cpu или номер GPU (по умолчанию GPU, если есть). Интерфейс Detection общий: worker и бэкенд не зависят от выбора.
 MODEL_DIR — каталог релиза модели (model.json, веса, классификатор шагов — scripts/publish-model.sh): задаёт всё это
 поверх окружения, см. apply_model_dir. DETECTOR_VIEWS — ансамбль видов кадра (исходный, резкость, контраст) с весами,
-см. cv.views; пусто — один проход.
+см. cv.views; пусто — один проход. DETECTOR_LOW_CONF — ниже DETECTOR_CONF: слабые боксы людей идут в L1 с
+attributes.low для второго прохода ByteTrack (decision.tracking); пусто — их нет.
 """
 
 import csv
@@ -174,6 +175,7 @@ class FrameDetector(Detector):
         from cv.views import parse_views  # cv.views → cv.channels импортирует этот модуль
 
         self.views = parse_views(os.environ.get("DETECTOR_VIEWS"))
+        self.low_conf = float(os.environ["DETECTOR_LOW_CONF"]) if os.environ.get("DETECTOR_LOW_CONF") else None
         self.load()
 
     def load(self) -> None:
@@ -185,25 +187,31 @@ class FrameDetector(Detector):
 
     def predict_frames(self, frames: list) -> list[list[tuple[str, list[float], float]]]:
         """Один проход или ансамбль видов (DETECTOR_VIEWS): каждый вид с порогом COMPONENT_CONF, слияние WBF,
-        затем DETECTOR_CONF по слитой уверенности."""
+        затем DETECTOR_CONF по слитой уверенности. С DETECTOR_LOW_CONF порог — он: слабые боксы отделяет detect."""
+        floor = min(self.low_conf or self.conf, self.conf)
         if not self.views:
-            return self.predict(frames)
+            return self.predict(frames, conf=floor if self.low_conf else None)
         from cv.views import COMPONENT_CONF, TRANSFORMS, wbf
 
-        per_view = [self.predict([TRANSFORMS[name](f) for f in frames], conf=min(COMPONENT_CONF, self.conf))
+        per_view = [self.predict([TRANSFORMS[name](f) for f in frames], conf=min(COMPONENT_CONF, floor))
                     for name, _ in self.views]
         weights = [w for _, w in self.views]
-        return [[d for d in wbf([p[i] for p in per_view], weights) if d[2] >= self.conf] for i in range(len(frames))]
+        return [[d for d in wbf([p[i] for p in per_view], weights) if d[2] >= floor] for i in range(len(frames))]
 
     def detect(self, video: Path) -> list[dict]:
         """Только L1: боксы по кадрам после постобработки и признаки по пикселям экрана и сейфа."""
-        raw, chunk, out = [], [], []
+        raw, chunk, out, low = [], [], [], []
         # признаки по пикселям считаются сразу по пачке, чтобы не держать в памяти все кадры видео
         pixels: dict[float, dict] = {}
 
         def flush():
             preds = self.predict_frames([f for _, f in chunk])
             for (t, frame), dets in zip(chunk, preds):
+                if self.low_conf:
+                    low.extend({"t": round(t, 3), "cls": c, "bbox": [round(v, 1) for v in b], "conf": round(s, 3),
+                                "attributes": {"low": True}} for c, b, s in dets
+                               if s < self.conf and c in ("person", "reflection"))
+                    dets = [d for d in dets if d[2] >= self.conf]
                 raw.append((t, dets))
                 pixels[round(t, 3)] = {tuple(round(v, 1) for v in b): pixel_attributes(frame, c, b)
                                        for c, b, _ in dets if c in ("computer", "safe")}
@@ -219,7 +227,7 @@ class FrameDetector(Detector):
             if b["cls"] in ("computer", "safe"):
                 b["attributes"].update(pixels.get(b["t"], {}).get(tuple(b["bbox"]), {}))
             out.append(b)
-        return out
+        return out + low
 
     def run(self, video: Path, sha256: str) -> Detection:
         from decision.steps import analyze, with_vlm

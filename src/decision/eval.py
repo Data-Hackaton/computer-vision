@@ -4,12 +4,14 @@
   MODEL_DIR=/data/runs/releases/<тег> python -m decision.eval --summary eval.json   # релиз модели (infra/model.sh)
 Группы: dev — видео, кадры или журнал которых использовались при обучении детектора и настройке правил;
 honest — остальные (val детектора и видео с нарушениями из violations_unreviewed.yaml).
-Отчёт — stdout и data/runs/eval/sop_<детектор>[@<тег>].json (--out); итоги по группам — --summary.
+Отчёт — stdout и data/runs/eval/sop_<детектор>[@<тег>][_<трекер>].json (--out); итоги по группам — --summary.
+TRACKER=bytetrack|botsort — трекер людей (decision.tracking), --cache-tag — опытный кэш L1 (cv.infer --cache-tag).
 """
 
 import argparse
 import csv
 import json
+import os
 from collections import defaultdict
 from pathlib import Path
 
@@ -53,9 +55,12 @@ def main() -> None:
     ap.add_argument("--vlm", action="store_true", help="спорные моменты — VLM (VLM_URL, ответы кэшируются в data/features)")
     ap.add_argument("--out", type=Path, help="отчёт по видео; по умолчанию data/runs/eval/sop_<детектор>[@<тег>].json")
     ap.add_argument("--summary", type=Path, help="итоги по группам в JSON (ворота выкатки модели в infra/model.sh)")
+    ap.add_argument("--cache-tag", help="опытный кэш l1_<детектор>@<метка>.json (cv.infer --cache-tag)")
     args = ap.parse_args()
     tag = apply_model_dir()
     detector = detector_arg(ap, tag, args.detector)
+    cache_tag = tag or args.cache_tag
+    tracker = os.environ.get("TRACKER", "greedy")
 
     with (DATA_DIR / "labels.csv").open() as f:
         rows = list(csv.DictReader(f))
@@ -75,7 +80,7 @@ def main() -> None:
     report = []
     for r in rows:
         name = r["video"]
-        path = cache_path(sha_of[name], detector, tag)
+        path = cache_path(sha_of[name], detector, cache_tag)
         if not path.exists():
             print(f"{name:>5}: нет кэша L1 ({path})")
             continue
@@ -101,6 +106,7 @@ def main() -> None:
                 "label_t": labels_t.get(name, []), "verdict": verdict, "hits": hits, "seq_accuracy": seq,
                 "expected_type": (unreviewed.get(name) or {}).get("type") or (journals.get(name, {}).get("type")),
                 "review": (review.get(name) or {}).get("status"),
+                "tracks": {role: sum(r == role for r in res["roles"].values()) for role in ("cashier", "client")},
                 "violations": [{"t": e["t_start"], "title": e["title"]} for e in viol],
                 "warnings": [{"t": e["t_start"], "title": e.get("title") or e["event"]} for e in warn]}
         report.append(item)
@@ -142,7 +148,9 @@ def main() -> None:
             print(f"проверка «{short}»: видео {len(part)}, модель нашла нарушение в "
                   f"{sum(x['verdict'] == 'violation' for x in part)}, таймкод ±{CATCH_WINDOW_SEC} с: "
                   f"{sum(bool(x['hits']) for x in part)}/{sum(x['label'] == 'violation' for x in part)}")
-    out = args.out or DATA_DIR / "runs" / "eval" / f"sop_{detector}{f'@{tag}' if tag else ''}{'_vlm' if args.vlm else ''}.json"
+    out = args.out or DATA_DIR / "runs" / "eval" / (f"sop_{detector}{f'@{cache_tag}' if cache_tag else ''}"
+                                                     f"{f'_{tracker}' if tracker != 'greedy' else ''}"
+                                                     f"{'_vlm' if args.vlm else ''}.json")
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(report, ensure_ascii=False, indent=1))
     print(f"→ {out}")
