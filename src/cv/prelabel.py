@@ -34,7 +34,14 @@ CLASSES: dict[str, tuple[list[str], float, int]] = {
     "table": (["wooden office desk"], 0.30, 1),
     "foreign_object": (["jacket", "coat", "handbag", "backpack", "cup"], 0.35, 4),
     "computer": (["laptop", "computer monitor"], 0.30, 2),
+    "ignore_zone": ([], 1.0, 0),  # из отдельного прохода по стеклу, см. video_zone
 }
+# Зона игнорирования — стекло, в котором отражаются люди и предметы. Камера на видео неподвижна, поэтому зона
+# ищется на нескольких кадрах видео и берётся медиана. Внутри зоны мелкие предметы не на кассовом столе
+# выбрасываются, а люди целиком внутри и не дотягивающие до её низа (не в дверном проёме) — это reflection.
+REGION_PHRASES = ["glass wall", "glass window"]
+REGION_FRAMES = 6
+SMALL_IN_ZONE = {"hand", "banknotes", "id_card", "phone", "bag", "foreign_object", "computer"}
 # Атрибуты CVAT, которые следуют из фразы
 PHRASE_ATTRS = {
     "jacket": {"kind": "clothing"}, "coat": {"kind": "clothing"},
@@ -52,7 +59,7 @@ PHRASE_TO_CLASS.update({p: None for p in DECOYS})
 # person и reflection подавляются друг другом: один и тот же человек не бывает и тем и другим
 NMS_GROUP = {"person": "person", "reflection": "person"}
 COLORS = ["#e6194b", "#808080", "#3cb44b", "#ffe119", "#4363d8", "#f58231", "#911eb4", "#46f0f0", "#f032e6", "#bcf60c",
-          "#9a6324", "#fabebe", "#008080"]
+          "#9a6324", "#fabebe", "#008080", "#000075"]
 
 
 def match_phrase(text: str) -> str | None:
@@ -91,6 +98,47 @@ def refilter(path: Path) -> None:
     path.write_text(json.dumps(coco))
 
 
+def largest_region(model, processor, image: Image.Image, device: str, dtype) -> list[float] | None:
+    """Самый большой бокс стекла на кадре (не меньше 5% площади) или None."""
+    w, h = image.size
+    inputs = processor(images=image, text=[REGION_PHRASES], return_tensors="pt").to(device)
+    inputs["pixel_values"] = inputs["pixel_values"].to(dtype)
+    with torch.no_grad():
+        outputs = model(**inputs)
+    result = processor.post_process_grounded_object_detection(
+        outputs, inputs.input_ids, threshold=0.25, text_threshold=0.2, target_sizes=[(h, w)])[0]
+    boxes = [b.tolist() for b in result["boxes"] if (b[2] - b[0]) * (b[3] - b[1]) / (w * h) >= 0.05]
+    return max(boxes, key=lambda b: (b[2] - b[0]) * (b[3] - b[1]), default=None)
+
+
+def video_zone(model, processor, paths: list[Path], device: str, dtype) -> list[float] | None:
+    """Медианный бокс стекла по REGION_FRAMES кадрам видео."""
+    sample = paths[:: max(1, len(paths) // REGION_FRAMES)][:REGION_FRAMES]
+    found = [b for p in sample if (b := largest_region(model, processor, Image.open(p).convert("RGB"), device, dtype))]
+    if not found:
+        return None
+    return [float(torch.tensor([b[k] for b in found]).median()) for k in range(4)]
+
+
+def center_in(b: list[float], zone: list[float]) -> bool:
+    cx, cy = (b[0] + b[2]) / 2, (b[1] + b[3]) / 2
+    return zone[0] <= cx <= zone[2] and zone[1] <= cy <= zone[3]
+
+
+def inside(b: list[float], zone: list[float], tol: float = 4.0) -> bool:
+    return b[0] >= zone[0] - tol and b[1] >= zone[1] - tol and b[2] <= zone[2] + tol and b[3] <= zone[3] + tol
+
+
+def intersects(a: list[float], b: list[float]) -> bool:
+    return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
+
+
+def overlap_share(a: list[float], b: list[float]) -> float:
+    """Доля площади a, лежащая внутри b."""
+    inter = max(0.0, min(a[2], b[2]) - max(a[0], b[0])) * max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    return inter / max(1e-6, (a[2] - a[0]) * (a[3] - a[1]))
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--data", type=Path, default=Path(os.environ.get("DATA_DIR", "/data")))
@@ -123,9 +171,17 @@ def main() -> None:
     preview_dir = root / ("preview" if args.out == "prelabels.coco.json" else f"preview_{Path(args.out).stem}")
     preview_dir.mkdir(exist_ok=True)
     started = time.time()
+
+    by_video: dict[str, list[Path]] = {}
+    for p in images:
+        by_video.setdefault(p.stem.rsplit("_", 1)[0], []).append(p)
+    zones = {v: video_zone(model, processor, paths, device, dtype) for v, paths in by_video.items()}
+    print(f"зоны стекла: {sum(z is not None for z in zones.values())}/{len(zones)} видео, {time.time() - started:.0f} с")
+
     for img_id, path in enumerate(images, start=1):
         image = Image.open(path).convert("RGB")
         w, h = image.size
+        zone = zones.get(path.stem.rsplit("_", 1)[0])
         coco["images"].append({"id": img_id, "file_name": path.name, "width": w, "height": h})
 
         inputs = processor(images=image, text=[phrases], return_tensors="pt").to(device)
@@ -166,18 +222,42 @@ def main() -> None:
                     if inter / area > 0.6:
                         worn.add(i)
             per_class: dict[int, int] = {}
+            chosen = []
             for i in order.tolist():
                 cat = int(cats[i])
                 if i in worn or per_class.get(cat, 0) >= CLASSES[class_names[cat]][2]:
                     continue
                 per_class[cat] = per_class.get(cat, 0) + 1
-                x1, y1, x2, y2 = boxes[i].tolist()
+                chosen.append((cat, boxes[i].tolist(), float(scores[i]), keep[i][3]))
+            if zone:
+                tables = [b for cat, b, _, _ in chosen if class_names[cat] == "table"]
+                doors = [b for cat, b, _, _ in chosen if class_names[cat] == "door"]
+                filtered = []
+                for cat, b, score, attrs in chosen:
+                    name = class_names[cat]
+                    if name in SMALL_IN_ZONE and center_in(b, zone) and not any(intersects(b, t) for t in tables):
+                        continue  # предмет в стекле, а не на кассовом столе
+                    in_doorway = any(overlap_share(b, d) > 0.5 for d in doors)
+                    if (name == "person" and inside(b, zone) and not in_doorway
+                            and b[3] < zone[3] - 0.05 * (zone[3] - zone[1])):
+                        cat = class_names.index("reflection")  # человек в стекле, не в двери и не у низа стекла
+                    filtered.append((cat, b, score, attrs))
+                chosen = filtered
+            for cat, (x1, y1, x2, y2), score, attrs in chosen:
                 coco["annotations"].append({
                     "id": len(coco["annotations"]) + 1, "image_id": img_id, "category_id": cat + 1,
                     "bbox": [round(x1, 1), round(y1, 1), round(x2 - x1, 1), round(y2 - y1, 1)],
-                    "area": round((x2 - x1) * (y2 - y1), 1), "iscrowd": 0, "score": round(float(scores[i]), 3),
-                    "attributes": keep[i][3],
+                    "area": round((x2 - x1) * (y2 - y1), 1), "iscrowd": 0, "score": round(score, 3),
+                    "attributes": attrs,
                 })
+        if zone:
+            x1, y1, x2, y2 = zone
+            coco["annotations"].append({
+                "id": len(coco["annotations"]) + 1, "image_id": img_id,
+                "category_id": class_names.index("ignore_zone") + 1,
+                "bbox": [round(x1, 1), round(y1, 1), round(x2 - x1, 1), round(y2 - y1, 1)],
+                "area": round((x2 - x1) * (y2 - y1), 1), "iscrowd": 0, "score": 1.0, "attributes": {"kind": "glass"},
+            })
 
         if img_id <= args.preview:
             draw = ImageDraw.Draw(image)

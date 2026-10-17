@@ -65,6 +65,24 @@
 
 ## Запуск
 
+Через docker compose из `infra` (образ `cv`, GPU через CDI, данные — `data_prepare/data` → `/data`; `src/` смонтирован, правки кода без пересборки):
+
 ```sh
-uv sync
+cd ../infra
+docker compose --profile tools build cv
+docker compose --profile tools run --rm cv python -m cv.prelabel --round r1          # предразметка Grounding DINO
+docker compose --profile tools run --rm cv python -m cv.train_yolo --dataset det_r1   # YOLO26s
+docker compose --profile tools run --rm cv python -m cv.train_rfdetr --dataset det_r1 # RF-DETR small
+docker compose --profile tools run --rm cv python -m cv.eval_detector --dataset det_r1 --yolo <best.pt> --rfdetr <checkpoint.pth>
 ```
+
+На GTX 1650 (4 ГБ): Grounding DINO только в fp32 (в fp16 — NaN), вход 640 px; Ultralytics сам выключает AMP; YOLO26s при 864 px влезает только с batch 1 — для обучения уменьшать imgsz или брать yolo26n.
+
+## Стекло и отражения
+
+В кадре стеклянная перегородка с дверью: в ней отражаются кассир и клиенты, сквозь неё видны люди в соседнем помещении — это главный источник ложных срабатываний. Детектор учит класс `ignore_zone` (бокс по стеклянной области) и класс `reflection` (человек в стекле). Постобработка детекций кадра:
+- мелкие предметы (`hand`, `banknotes`, `id_card`, `phone`, `bag`, `foreign_object`, `computer`), у которых центр внутри `ignore_zone` и бокс не пересекает `table`, отбрасываются;
+- `reflection` в журнал действий не попадает;
+- `person` целиком внутри зоны, не в двери и не у её низа — считается отражением.
+
+Та же логика уже работает в предразметке (`src/cv/prelabel.py`: `video_zone`, `SMALL_IN_ZONE`).
