@@ -1,14 +1,18 @@
-"""Позы людей MediaPipe Pose Landmarker на боксах person из кэша L1 — проба: находит ли поза руки и плечи кассира на
-наших кадрах (464×848, человек ~100×200 px). Hand Landmarker не берём: кисть в кадре ~20 px.
+"""Позы людей MediaPipe Pose Landmarker: 33 точки [x, y, видимость] в координатах кадра по боксу person.
 
-  docker compose -f tools/mediapipe/compose.yaml run --rm mp python -m cv.pose --videos X-1 X-34 X-13 X-2 X-28 X-31
-Пишет data/features/<sha>/pose_mp.json (по боксу: t, bbox, 33 точки [x, y, видимость] в координатах кадра или null)
-и контрольные листы data/runs/pose/<видео>.jpg; итоги — data/runs/pose/summary.json.
+В сервисе — PoseEstimator.from_env(): POSE=off|lite|full|heavy (модель POSE_MODEL_DIR/pose_landmarker_<вид>.task,
+в образе cv — /models), FrameDetector кладёт точки в attributes.pose боксов person, L2 читает их в decision.posture.
+Нет mediapipe или модели — предупреждение и работа без поз. Hand Landmarker не берём: кисть в кадре ~20 px.
+
+Проба на кэше L1 (контрольные листы со скелетом, доля найденных поз, мс на кроп):
+  docker compose -f tools/mediapipe/compose.yaml run --rm -e CACHE_TAG=native mp python -m cv.pose --videos X-1 X-34
+Пишет data/features/<sha>/pose_<вид>[@<метка>].json и data/runs/pose/<видео>_<вид>.jpg; итоги — summary_<вид>.json.
 """
 
 import argparse
 import csv
 import json
+import logging
 import os
 import time
 from pathlib import Path
@@ -18,9 +22,8 @@ import numpy as np
 
 from cv.detectors import DATA_DIR, iter_frames
 
-MODEL = os.environ.get("POSE_MODEL", "/models/pose_landmarker_heavy.task")
-CACHE_TAG = os.environ.get("CACHE_TAG") or None  # кэш L1: l1_yolo[@<метка>].json; позы считаются на его частоте
-MIN_CONF = 0.5  # бокс person из L1
+log = logging.getLogger(__name__)
+KINDS = ("lite", "full", "heavy")
 MARGIN = 0.15  # поле вокруг бокса: руки и локти часто выходят за рамку детектора
 CROP_H = 384  # кроп растягивается до этой высоты — модель рассчитана на крупного человека
 VISIBLE = 0.5
@@ -31,13 +34,49 @@ TILE = (120, 200)  # ширина, высота клетки контрольн�
 SHEET_COLS, SHEET_MAX = 10, 60
 
 
-def landmarker():
-    from mediapipe.tasks.python import BaseOptions, vision
+class PoseEstimator:
+    """Pose Landmarker в режиме IMAGE на кропе человека; точки возвращаются в координатах кадра."""
 
-    opts = vision.PoseLandmarkerOptions(base_options=BaseOptions(model_asset_path=MODEL),
-                                        running_mode=vision.RunningMode.IMAGE, num_poses=1,
-                                        min_pose_detection_confidence=0.3, min_pose_presence_confidence=0.3)
-    return vision.PoseLandmarker.create_from_options(opts)
+    def __init__(self, model: Path, kind: str | None = None) -> None:
+        from mediapipe.tasks.python import BaseOptions, vision
+
+        self.model, self.kind = Path(model), kind or Path(model).stem.rsplit("_", 1)[-1]
+        opts = vision.PoseLandmarkerOptions(base_options=BaseOptions(model_asset_path=str(model)),
+                                            running_mode=vision.RunningMode.IMAGE, num_poses=1,
+                                            min_pose_detection_confidence=0.3, min_pose_presence_confidence=0.3)
+        self.landmarker = vision.PoseLandmarker.create_from_options(opts)
+
+    @classmethod
+    def from_env(cls) -> "PoseEstimator | None":
+        kind = os.environ.get("POSE", "off")
+        if kind in ("", "off", "0"):
+            return None
+        if kind not in KINDS:
+            raise ValueError(f"POSE={kind}: off, {', '.join(KINDS)}")
+        model = Path(os.environ.get("POSE_MODEL_DIR", "/models")) / f"pose_landmarker_{kind}.task"
+        if not model.exists():
+            log.warning("нет модели позы %s — работаем без поз", model)
+            return None
+        try:
+            return cls(model, kind)
+        except ImportError as e:  # образ без mediapipe — без поз, но не падаем
+            log.warning("mediapipe недоступен (%s) — работаем без поз", e)
+            return None
+
+    def landmarks(self, frame: np.ndarray, bbox: list[float]) -> list[list[float]] | None:
+        crop, origin = crop_box(frame, bbox)
+        return self.detect(crop, origin)
+
+    def detect(self, crop: np.ndarray, origin: tuple[int, int, float]) -> list[list[float]] | None:
+        import mediapipe as mp
+
+        res = self.landmarker.detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=np.ascontiguousarray(crop[:, :, ::-1])))
+        if not res.pose_landmarks:
+            return None
+        x0, y0, scale = origin
+        ch, cw = crop.shape[:2]
+        return [[round(x0 + p.x * cw / scale, 1), round(y0 + p.y * ch / scale, 1), round(p.visibility or 0.0, 2)]
+                for p in res.pose_landmarks[0]]
 
 
 def crop_box(frame: np.ndarray, bbox: list[float]) -> tuple[np.ndarray, tuple[int, int, float]]:
@@ -51,16 +90,11 @@ def crop_box(frame: np.ndarray, bbox: list[float]) -> tuple[np.ndarray, tuple[in
     return cv2.resize(crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC), (x0, y0, scale)
 
 
-def detect_pose(model, crop: np.ndarray, origin: tuple[int, int, float]) -> list[list[float]] | None:
-    import mediapipe as mp
+# --- проба: контрольные листы и статистика по кэшу L1 ---
 
-    res = model.detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=np.ascontiguousarray(crop[:, :, ::-1])))
-    if not res.pose_landmarks:
-        return None
-    x0, y0, scale = origin
-    ch, cw = crop.shape[:2]
-    return [[round(x0 + p.x * cw / scale, 1), round(y0 + p.y * ch / scale, 1), round(p.visibility or 0.0, 2)]
-            for p in res.pose_landmarks[0]]
+MODEL = os.environ.get("POSE_MODEL", "/models/pose_landmarker_heavy.task")
+CACHE_TAG = os.environ.get("CACHE_TAG") or None  # кэш L1: l1_yolo[@<метка>].json; позы считаются на его частоте
+MIN_CONF = 0.5  # бокс person из L1
 
 
 def draw(tile: np.ndarray, pts: list[list[float]] | None, origin: tuple[int, int, float], label: str) -> np.ndarray:
@@ -88,7 +122,7 @@ def sheet(tiles: list[np.ndarray]) -> np.ndarray:
     return np.vstack([np.hstack(r + [blank] * (SHEET_COLS - len(r))) for r in rows])
 
 
-def run_video(model, name: str, sha: str) -> dict:
+def run_video(model: PoseEstimator, name: str, sha: str) -> dict:
     cache = json.loads((DATA_DIR / "features" / sha / f"l1_yolo{'@' + CACHE_TAG if CACHE_TAG else ''}.json").read_text())
     by_t: dict[float, list[dict]] = {}
     for b in cache["boxes"]:
@@ -99,17 +133,16 @@ def run_video(model, name: str, sha: str) -> dict:
         for b in by_t.get(round(t, 3), []):
             crop, origin = crop_box(frame, b["bbox"])
             started = time.time()
-            pts = detect_pose(model, crop, origin)
+            pts = model.detect(crop, origin)
             took.append(time.time() - started)
             items.append({"t": round(t, 3), "bbox": b["bbox"], "conf": b["conf"], "landmarks": pts})
             tiles.append(draw(crop, pts, origin, f"{t:.1f}s {'ok' if pts else 'NO'}"))
-    out = DATA_DIR / "features" / sha / f"pose_{Path(MODEL).stem.rsplit('_', 1)[-1]}{'@' + CACHE_TAG if CACHE_TAG else ''}.json"
-    out.write_text(json.dumps({"video": name, "model": Path(MODEL).name, "fps": cache["fps"], "poses": items}))
+    out = DATA_DIR / "features" / sha / f"pose_{model.kind}{'@' + CACHE_TAG if CACHE_TAG else ''}.json"
+    out.write_text(json.dumps({"video": name, "model": model.model.name, "fps": cache["fps"], "poses": items}))
     if tiles:
         pick = np.linspace(0, len(tiles) - 1, min(SHEET_MAX, len(tiles))).round().astype(int)
         (DATA_DIR / "runs" / "pose").mkdir(parents=True, exist_ok=True)
-        cv2.imwrite(str(DATA_DIR / "runs" / "pose" / f"{name}_{Path(MODEL).stem.rsplit('_', 1)[-1]}.jpg"),
-                    sheet([tiles[i] for i in pick]))
+        cv2.imwrite(str(DATA_DIR / "runs" / "pose" / f"{name}_{model.kind}.jpg"), sheet([tiles[i] for i in pick]))
     found = [x for x in items if x["landmarks"]]
     wrists = [x for x in found if all(x["landmarks"][i][2] >= VISIBLE for i in WRISTS)]
     shoulders = [x for x in found if all(x["landmarks"][i][2] >= VISIBLE for i in SHOULDERS)]
@@ -126,12 +159,12 @@ def main() -> None:
     args = ap.parse_args()
     with (DATA_DIR / "labels.csv").open() as f:
         sha = {r["video"]: r["sha256"] for r in csv.DictReader(f) if not r["duplicate_of"]}
-    model = landmarker()
+    model = PoseEstimator(Path(MODEL))
     summary = {}
     for name in args.videos:
         summary[name] = run_video(model, name, sha[name])
         print(name, summary[name], flush=True)
-    path = DATA_DIR / "runs" / "pose" / f"summary_{Path(MODEL).stem.rsplit('_', 1)[-1]}.json"
+    path = DATA_DIR / "runs" / "pose" / f"summary_{model.kind}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(summary, ensure_ascii=False, indent=1))
     print(f"→ {path}")
